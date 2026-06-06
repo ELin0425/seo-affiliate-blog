@@ -47,14 +47,42 @@ client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 # ── Topic Management ──────────────────────────────────────────────────────────
 
 def get_next_topic() -> str:
-    """Return the first unprocessed topic from topics.txt and mark it done."""
+    """Return the first unprocessed topic from topics.txt.
+
+    In CI (GitHub Actions): picks the first topic not already published in _posts/.
+    Locally: marks the topic DONE in topics.txt so it's skipped next run.
+    """
     lines = TOPICS_FILE.read_text(encoding="utf-8").splitlines()
+    candidates = [
+        l.strip() for l in lines
+        if l.strip() and not l.strip().startswith("#") and not l.strip().startswith("DONE:")
+    ]
+
+    if not candidates:
+        raise ValueError("No more topics in topics.txt — add some!")
+
+    if os.getenv("GITHUB_ACTIONS"):
+        # Skip topics that already have a matching post file
+        published = {
+            re.sub(r"^\d{4}-\d{2}-\d{2}-", "", f.stem)
+            for f in (BLOG_REPO / "_posts").glob("*.md")
+        } if (BLOG_REPO / "_posts").exists() else set()
+
+        for topic in candidates:
+            slug = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:60]
+            if slug not in published:
+                return topic
+
+        raise ValueError("All topics already published — add new ones to topics.txt!")
+
+    # Local: mark first candidate as done
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped and not stripped.startswith("#") and not stripped.startswith("DONE:"):
             lines[i] = f"DONE: {stripped}"
             TOPICS_FILE.write_text("\n".join(lines), encoding="utf-8")
             return stripped
+
     raise ValueError("No more topics in topics.txt — add some!")
 
 
@@ -376,16 +404,20 @@ def publish_to_blog(topic: str, article: str) -> str:
     filepath = posts_dir / filename
 
     filepath.write_text(frontmatter + clean_article, encoding="utf-8")
+    live_url = f"https://elin0425.github.io/kitchen-finds/{date_str}/{slug}/"
 
-    # git add → commit → push
+    if os.getenv("GITHUB_ACTIONS"):
+        # Workflow handles the git commit/push — nothing to do here
+        return live_url
+
+    # Local: commit and push ourselves
     try:
+        subprocess.run(["git", "config", "user.email", "bot@kitchen-finds.com"], cwd=BLOG_REPO, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Kitchen Finds Bot"], cwd=BLOG_REPO, check=True, capture_output=True)
         subprocess.run(["git", "add", str(filepath)], cwd=BLOG_REPO, check=True, capture_output=True)
-        subprocess.run(
-            ["git", "commit", "-m", f"post: {topic[:60]}"],
-            cwd=BLOG_REPO, check=True, capture_output=True,
-        )
+        subprocess.run(["git", "commit", "-m", f"post: {topic[:60]}"], cwd=BLOG_REPO, check=True, capture_output=True)
         subprocess.run(["git", "push"], cwd=BLOG_REPO, check=True, capture_output=True)
-        return f"https://elin0425.github.io/kitchen-finds/{date_str}/{slug}/"
+        return live_url
     except subprocess.CalledProcessError as e:
         print(f"  Git push failed: {e.stderr.decode()}")
         return str(filepath)

@@ -1,0 +1,17 @@
+# SEO Affiliate Blog — Kitchen Gadgets Under $50
+# Topics are processed top-to-bottom. Completed ones get prefixed with DONE:
+# Run: python main.py          → picks next topic
+# Run: python main.py "topic"  → specific topic (not consumed from this file)
+
+DONE: best kitchen gadgets under $50 for small apartments
+DONE: best immersion blenders under $50
+best air fryers under $50
+best coffee gadgets and accessories under $50
+best kitchen tools for beginners under $50
+best meal prep gadgets under $50
+best kitchen gadgets for college students
+best mini appliances for dorm rooms
+best knife sharpeners under $50
+best kitchen gifts under $50 for home cooks
+best breakfast gadgets under $50
+best cutting and chopping tools under $50

@@ -10,6 +10,7 @@ Usage:
   python main.py "best air fryers under $50"      # specific topic
 """
 
+import base64
 import os
 import re
 import subprocess
@@ -198,7 +199,20 @@ def research_products(keyword: str) -> list[dict]:
         print("  Falling back to curated product list")
         products = _curated_products(seen_asins)
 
-    print(f"  Found {len(products)} products")
+    # Validate all ASINs are live before handing them to the writer
+    print("  Validating product links...")
+    valid_products = []
+    for p in products:
+        if _validate_asin(p["asin"]):
+            valid_products.append(p)
+        else:
+            print(f"  Skipping dead ASIN {p['asin']} ({p['name'][:50]})")
+    products = valid_products
+
+    if len(products) < 3:
+        raise ValueError(f"Only {len(products)} valid product(s) found — not enough to write an article. Check your search queries.")
+
+    print(f"  Found {len(products)} valid products")
     return products[:8]
 
 
@@ -206,6 +220,20 @@ def _extract_asin(url: str) -> str | None:
     """Pull the 10-char ASIN from an Amazon URL."""
     match = re.search(r"/dp/([A-Z0-9]{10})", url)
     return match.group(1) if match else None
+
+
+def _validate_asin(asin: str) -> bool:
+    """Return True if the Amazon product page returns HTTP 200."""
+    url = f"https://www.amazon.com/dp/{asin}"
+    try:
+        resp = requests.get(url, timeout=10, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        }, stream=True)
+        resp.close()
+        return resp.status_code == 200
+    except Exception:
+        return False
 
 
 def _clean_title(title: str) -> str:
@@ -217,15 +245,13 @@ def _clean_title(title: str) -> str:
 
 def _curated_products(exclude_asins: set) -> list[dict]:
     """Curated fallback list — real products with verified ASINs."""
+    # ASINs verified working as of 2026-06-07 — validation step in research_products()
+    # will automatically skip any that go stale in future runs
     items = [
         ("Mueller Ultra-Stick 500W Immersion Blender", "B07Y7CSNL5"),
-        ("COSORI Electric Kettle 1.7L Stainless Steel", "B07R6B2QKN"),
-        ("Zulay Milk Frother Handheld Foam Maker", "B07H4WHQBR"),
-        ("DASH Mini Waffle Maker 4 Inch", "B07C9NW8R4"),
         ("OXO Good Grips Large Salad Spinner", "B00004OCNS"),
         ("Fullstar Vegetable Chopper Spiralizer", "B0764HS4SL"),
         ("Lodge 10.25 Inch Cast Iron Skillet", "B00006JSUA"),
-        ("Instant Pot Duo Mini 3 Quart", "B06Y1YD5W7"),
     ]
     return [
         {
@@ -237,6 +263,79 @@ def _curated_products(exclude_asins: set) -> list[dict]:
         for name, asin in items
         if asin not in exclude_asins
     ]
+
+
+# ── Hero Image ───────────────────────────────────────────────────────────────
+
+def fetch_hero_image(topic: str, slug: str, date_str: str) -> tuple[Path | None, str | None]:
+    """Search Unsplash, QA each candidate with Claude vision, save the first that passes."""
+    key = os.getenv("UNSPLASH_ACCESS_KEY")
+    if not key:
+        print("  No UNSPLASH_ACCESS_KEY in .env — skipping hero image")
+        return None, None
+
+    search_query = re.sub(r"\bunder\s*\$\d+\b|\bbest\b", "", topic, flags=re.IGNORECASE).strip()
+    search_query = f"kitchen {search_query} food"
+
+    try:
+        resp = requests.get(
+            "https://api.unsplash.com/search/photos",
+            params={"query": search_query, "per_page": 5, "orientation": "landscape"},
+            headers={"Authorization": f"Client-ID {key}"},
+            timeout=10,
+        )
+        results = resp.json().get("results", [])
+    except Exception as e:
+        print(f"  Unsplash search failed: {e}")
+        return None, None
+
+    img_dir = BLOG_REPO / "assets" / "images" / "posts"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    for result in results[:3]:
+        photographer = result["user"]["name"]
+        username = result["user"]["username"]
+        try:
+            img_data = requests.get(result["urls"]["regular"], timeout=15).content
+        except Exception:
+            continue
+
+        print(f"  QA-ing image by {photographer}...")
+        if _qa_image(img_data, topic):
+            img_path = img_dir / f"{date_str}-{slug}.jpg"
+            img_path.write_bytes(img_data)
+            credit = f"Photo by [{photographer}](https://unsplash.com/@{username}) on [Unsplash](https://unsplash.com)"
+            print(f"  PASS — saved {img_path.name}")
+            return img_path, credit
+        else:
+            print("  FAIL — trying next candidate")
+
+    print("  No suitable hero image found after 3 candidates")
+    return None, None
+
+
+def _qa_image(img_data: bytes, topic: str) -> bool:
+    """Claude vision check — PASS if image is relevant and appealing for this topic."""
+    b64 = base64.standard_b64encode(img_data).decode("utf-8")
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=20,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
+                    {"type": "text", "text": (
+                        f"Blog post topic: '{topic}'. "
+                        "Does this image show food, cooking, or kitchen items in an appealing, high-quality way? "
+                        "Reply PASS or FAIL only."
+                    )},
+                ],
+            }],
+        )
+        return "PASS" in response.content[0].text.upper()
+    except Exception:
+        return False
 
 
 # ── Article Writer ────────────────────────────────────────────────────────────
@@ -251,9 +350,8 @@ Your voice is warm, direct, and occasionally dry. You never write filler. Every 
 ARTICLE STRUCTURE (follow this exactly):
 
 1. **H1 title** — keyword-rich, compelling, specific (e.g., "The 8 Best Kitchen Gadgets Under $50 That Are Actually Worth It")
-2. **Disclosure** — one line: *Disclosure: This post contains Amazon affiliate links. If you buy through them, I earn a small commission at no extra cost to you.*
-3. **Intro** (2–3 short paragraphs) — open with a relatable frustration or surprising fact, then promise what they'll leave with. No "In this article we will..." openers.
-4. **Quick Picks** — a short bolded list: 3–5 top picks, one-line reason each (for people who just want the answer)
+2. **Intro** (2–3 short paragraphs) — open with a relatable frustration or surprising fact, then promise what they'll leave with. No "In this article we will..." openers.
+3. **Quick Picks** — a short bolded list: 3–5 top picks, one-line reason each (for people who just want the answer)
 5. **H2: How We Picked These** — 3–4 sentences on your selection criteria. Short, credible, no fluff.
 6. **H2: The Best [Topic]** — the main product list
    - For each product: H3 with the product name, then 2–3 sentences (what problem it solves + one standout detail), then the affiliate link on its own line as: `[→ Check price on Amazon](URL)`
@@ -353,7 +451,7 @@ def qa_review(draft: str, topic: str) -> str:
 
 # ── Save & Publish ────────────────────────────────────────────────────────────
 
-def _make_frontmatter(topic: str, article: str, layout: str = "post") -> tuple[str, str, str]:
+def _make_frontmatter(topic: str, article: str, layout: str = "post", image_url: str = None) -> tuple[str, str, str]:
     """Return (frontmatter, slug, date_str) for an article."""
     slug = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:60]
     date_str = datetime.now().strftime("%Y-%m-%d")
@@ -361,10 +459,10 @@ def _make_frontmatter(topic: str, article: str, layout: str = "post") -> tuple[s
     meta_match = re.search(r"<!--\s*META:\s*(.+?)\s*-->", article)
     meta_desc = meta_match.group(1) if meta_match else f"The best {topic} — tested picks with real Amazon affiliate links."
 
-    # Extract the H1 title Claude wrote (cleaner than using the raw keyword)
     title_match = re.search(r"^#\s+(.+)$", article, re.MULTILINE)
     title = title_match.group(1).strip() if title_match else topic
 
+    image_line = f'image: "{image_url}"\n' if image_url else ""
     frontmatter = (
         f"---\n"
         f"layout: {layout}\n"
@@ -372,13 +470,16 @@ def _make_frontmatter(topic: str, article: str, layout: str = "post") -> tuple[s
         f"date: {date_str}\n"
         f'description: "{meta_desc}"\n'
         f"categories: [kitchen, gadgets]\n"
+        f"{image_line}"
         f"---\n\n"
     )
     return frontmatter, slug, date_str
 
 
 def _clean_for_publish(article: str) -> str:
-    """Strip internal pipeline comments before publishing."""
+    """Strip H1, disclosure, and internal pipeline comments before publishing."""
+    article = re.sub(r"^#\s+.+\n?", "", article, count=1, flags=re.MULTILINE)
+    article = re.sub(r"^\*Disclosure:.*?\*\n?", "", article, flags=re.MULTILINE)
     article = re.sub(r"<!--\s*META:.*?-->", "", article)
     article = re.sub(r"<!--\s*QA:.*?-->", "", article)
     return article.strip()
@@ -393,34 +494,59 @@ def save_article(topic: str, article: str) -> Path:
     return filepath
 
 
-def publish_to_blog(topic: str, article: str) -> str:
+def publish_to_blog(topic: str, article: str, hero_path: Path | None = None, hero_credit: str | None = None) -> str:
     """Copy article to the blog repo and push to GitHub Pages."""
     posts_dir = BLOG_REPO / "_posts"
     posts_dir.mkdir(parents=True, exist_ok=True)
 
-    frontmatter, slug, date_str = _make_frontmatter(topic, article, layout="post")
+    image_url = f"/kitchen-finds/assets/images/posts/{hero_path.name}" if (hero_path and hero_path.exists()) else None
+    frontmatter, slug, date_str = _make_frontmatter(topic, article, layout="post", image_url=image_url)
     clean_article = _clean_for_publish(article)
+
+    hero_block = ""
+    if image_url:
+        hero_block = f"![{topic}]({image_url})\n"
+        hero_block += f"*{hero_credit}*\n\n" if hero_credit else "\n"
+
     filename = f"{date_str}-{slug}.md"
     filepath = posts_dir / filename
+    filepath.write_text(frontmatter + hero_block + clean_article, encoding="utf-8")
 
-    filepath.write_text(frontmatter + clean_article, encoding="utf-8")
-    live_url = f"https://elin0425.github.io/kitchen-finds/{date_str}/{slug}/"
+    year, month, day = date_str.split("-")
+    live_url = f"https://elin0425.github.io/kitchen-finds/{year}/{month}/{day}/{slug}/"
 
     if os.getenv("GITHUB_ACTIONS"):
-        # Workflow handles the git commit/push — nothing to do here
         return live_url
 
-    # Local: commit and push ourselves
     try:
         subprocess.run(["git", "config", "user.email", "bot@kitchen-finds.com"], cwd=BLOG_REPO, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.name", "Kitchen Finds Bot"], cwd=BLOG_REPO, check=True, capture_output=True)
-        subprocess.run(["git", "add", str(filepath)], cwd=BLOG_REPO, check=True, capture_output=True)
+        files_to_add = [str(filepath)]
+        if hero_path and hero_path.exists():
+            files_to_add.append(str(hero_path))
+        subprocess.run(["git", "add"] + files_to_add, cwd=BLOG_REPO, check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", f"post: {topic[:60]}"], cwd=BLOG_REPO, check=True, capture_output=True)
         subprocess.run(["git", "push"], cwd=BLOG_REPO, check=True, capture_output=True)
         return live_url
     except subprocess.CalledProcessError as e:
         print(f"  Git push failed: {e.stderr.decode()}")
         return str(filepath)
+
+
+# ── Link Validation ──────────────────────────────────────────────────────────
+
+def validate_article_links(article: str) -> list[str]:
+    """Extract all Amazon ASINs from the article and return any that are dead (404)."""
+    asins = re.findall(r"amazon\.com/dp/([A-Z0-9]{10})", article)
+    seen = set()
+    broken = []
+    for asin in asins:
+        if asin in seen:
+            continue
+        seen.add(asin)
+        if not _validate_asin(asin):
+            broken.append(asin)
+    return broken
 
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
@@ -445,11 +571,25 @@ def run_pipeline(topic: str = None):
     draft = write_article(topic, competitors, products)
     print(f"  Draft: ~{len(draft.split())} words\n")
 
-    print("Step 4/4 — QA review...")
+    print("Step 4/6 — QA review...")
     final = qa_review(draft, topic)
 
+    print("Step 5/6 — Validating affiliate links...")
+    broken = validate_article_links(final)
+    if broken:
+        print(f"  ERROR: {len(broken)} dead affiliate link(s) found: {', '.join(broken)}")
+        print("  Pipeline aborted — fix ASINs before publishing.")
+        sys.exit(1)
+    print(f"  All affiliate links OK")
+
+    slug = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:60]
+    date_str = datetime.now().strftime("%Y-%m-%d")
+
+    print("Step 6/6 — Hero image...")
+    hero_path, hero_credit = fetch_hero_image(topic, slug, date_str)
+
     local_path = save_article(topic, final)
-    live_url = publish_to_blog(topic, final)
+    live_url = publish_to_blog(topic, final, hero_path=hero_path, hero_credit=hero_credit)
 
     word_count = len(re.sub(r"---.*?---", "", final, flags=re.DOTALL).split())
     qa_match = re.search(r"<!--\s*QA:\s*(.+?)\s*-->", final)
@@ -458,6 +598,8 @@ def run_pipeline(topic: str = None):
     print(f"  Local copy: {local_path}")
     print(f"  Live at:    {live_url}")
     print(f"  Word count: ~{word_count}")
+    if hero_path:
+        print(f"  Hero image: {hero_path.name}")
     if qa_match:
         print(f"  QA note: {qa_match.group(1)}")
     print(f"{'='*60}\n")

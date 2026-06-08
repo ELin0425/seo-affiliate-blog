@@ -209,8 +209,11 @@ def research_products(keyword: str) -> list[dict]:
             print(f"  Skipping dead ASIN {p['asin']} ({p['name'][:50]})")
     products = valid_products
 
+    if len(products) < 2:
+        raise ValueError(f"Only {len(products)} valid product(s) found — cannot write a useful article. Check your search queries or topics.txt.")
+
     if len(products) < 3:
-        raise ValueError(f"Only {len(products)} valid product(s) found — not enough to write an article. Check your search queries.")
+        print(f"  Warning: only {len(products)} valid products found — article may be short.")
 
     print(f"  Found {len(products)} valid products")
     return products[:8]
@@ -533,20 +536,56 @@ def publish_to_blog(topic: str, article: str, hero_path: Path | None = None, her
         return str(filepath)
 
 
-# ── Link Validation ──────────────────────────────────────────────────────────
+# ── Link Validation & Auto-Fix ───────────────────────────────────────────────
 
-def validate_article_links(article: str) -> list[str]:
-    """Extract all Amazon ASINs from the article and return any that are dead (404)."""
-    asins = re.findall(r"amazon\.com/dp/([A-Z0-9]{10})", article)
-    seen = set()
-    broken = []
-    for asin in asins:
-        if asin in seen:
-            continue
-        seen.add(asin)
-        if not _validate_asin(asin):
-            broken.append(asin)
+def _dead_asins(article: str) -> list[str]:
+    """Return unique ASINs in the article that return 404."""
+    seen, broken = set(), []
+    for asin in re.findall(r"amazon\.com/dp/([A-Z0-9]{10})", article):
+        if asin not in seen:
+            seen.add(asin)
+            if not _validate_asin(asin):
+                broken.append(asin)
     return broken
+
+
+def _find_replacement_asin(product_name: str) -> str | None:
+    """Search Amazon for a live replacement ASIN given a product name."""
+    try:
+        with DDGS() as ddgs:
+            hits = list(ddgs.text(f"site:amazon.com {product_name}", max_results=8))
+        for hit in hits:
+            asin = _extract_asin(hit.get("href", ""))
+            if asin and _validate_asin(asin):
+                return asin
+    except Exception:
+        pass
+    return None
+
+
+def fix_broken_links(article: str) -> str:
+    """Replace dead ASINs with live ones. If no replacement found, strips the link text
+    so the product description stays but the dead URL is removed. Always returns a
+    publishable article — never aborts the pipeline."""
+    for asin in _dead_asins(article):
+        # Extract nearest H3 product name to guide the search
+        name_match = re.search(rf"###\s+(.+?)\n[\s\S]{{1,600}}?{asin}", article)
+        product_name = name_match.group(1).strip() if name_match else ""
+        label = product_name[:55] or asin
+        print(f"  Dead ASIN {asin} ({label}) — searching for replacement...")
+        replacement = _find_replacement_asin(product_name or asin)
+        if replacement:
+            article = article.replace(asin, replacement)
+            print(f"  Replaced {asin} -> {replacement}")
+        else:
+            # Keep the product write-up, just remove the dead link
+            article = re.sub(
+                rf"\[→ Check price on Amazon\]\(https://www\.amazon\.com/dp/{asin}[^)]*\)",
+                "*Check Amazon for current availability.*",
+                article,
+            )
+            print(f"  No replacement found for {asin} — link removed, description kept")
+    return article
 
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
@@ -559,15 +598,15 @@ def run_pipeline(topic: str = None):
     print(f"  Topic: {topic}")
     print(f"{'='*60}\n")
 
-    print("Step 1/4 — Competitor research...")
+    print("Step 1/6 — Competitor research...")
     competitors = search_competitors(topic)
     print(f"  {len(competitors)} competitor articles analyzed\n")
 
-    print("Step 2/4 — Product research...")
+    print("Step 2/6 — Product research...")
     products = research_products(topic)
-    print(f"  {len(products)} products with ASINs ready\n")
+    print(f"  {len(products)} valid products ready\n")
 
-    print("Step 3/4 — Writing article...")
+    print("Step 3/6 — Writing article...")
     draft = write_article(topic, competitors, products)
     print(f"  Draft: ~{len(draft.split())} words\n")
 
@@ -575,12 +614,17 @@ def run_pipeline(topic: str = None):
     final = qa_review(draft, topic)
 
     print("Step 5/6 — Validating affiliate links...")
-    broken = validate_article_links(final)
+    broken = _dead_asins(final)
     if broken:
-        print(f"  ERROR: {len(broken)} dead affiliate link(s) found: {', '.join(broken)}")
-        print("  Pipeline aborted — fix ASINs before publishing.")
-        sys.exit(1)
-    print(f"  All affiliate links OK")
+        print(f"  {len(broken)} dead link(s) found — auto-fixing...")
+        final = fix_broken_links(final)
+        remaining = _dead_asins(final)
+        if remaining:
+            print(f"  Could not replace {len(remaining)} ASIN(s): {', '.join(remaining)} — links stripped, article still publishing")
+        else:
+            print(f"  All broken links fixed")
+    else:
+        print(f"  All affiliate links OK")
 
     slug = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:60]
     date_str = datetime.now().strftime("%Y-%m-%d")

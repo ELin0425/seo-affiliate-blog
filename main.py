@@ -353,19 +353,38 @@ Your voice is warm, direct, and occasionally dry. You never write filler. Every 
 ARTICLE STRUCTURE (follow this exactly):
 
 1. **H1 title** — keyword-rich, compelling, specific (e.g., "The 8 Best Kitchen Gadgets Under $50 That Are Actually Worth It")
+
 2. **Intro** (2–3 short paragraphs) — open with a relatable frustration or surprising fact, then promise what they'll leave with. No "In this article we will..." openers.
-3. **Quick Picks** — a short bolded list: 3–5 top picks, one-line reason each (for people who just want the answer)
+
+3. **Quick Picks** — a short bolded list of all products. Format each line as:
+   - **[Label]:** [Product Name] — [one-line reason]
+   Use labels like: Best overall, Best for beginners, Best compact, Best value, Best no-frills, etc.
+
+4. **Comparison table** — a markdown table immediately after Quick Picks. Columns: Product | Best For | Capacity | Key Perk. Fill in what you know from the product context; use "—" if a spec is unknown. Example:
+   | Product | Best For | Capacity | Key Perk |
+   |---|---|---|---|
+   | DASH Tasti-Crisp | Beginners | 2.6 Qt | One-dial simplicity |
+
 5. **H2: How We Picked These** — 3–4 sentences on your selection criteria. Short, credible, no fluff.
-6. **H2: The Best [Topic]** — the main product list
-   - For each product: H3 with the product name, then 2–3 sentences (what problem it solves + one standout detail), then the affiliate link on its own line as: `[→ Check price on Amazon](URL)`
-7. **H2: What to Skip** — 2–3 short bullets on things to avoid in this category (builds trust, shows you're not just selling everything)
+
+6. **H2: The Best [Topic]** — the main product list. For each product:
+   - **H3** with the product name
+   - 2–3 sentences: what problem it solves + one specific standout detail (not vague praise)
+   - **Best for:** [one specific use case, e.g. "solo cooks who hate reading manuals"]
+   - **Pros:** 2–3 bullet points — concrete, specific (e.g. "Basket fits a full chicken breast", not "good capacity")
+   - **Cons:** 1–2 bullet points — honest (e.g. "2.6 Qt feels cramped cooking for 3+")
+   - Affiliate link on its own line: `[→ Check price on Amazon](URL)`
+
+7. **H2: What to Skip** — 2–3 short bullets on things to avoid in this category (builds trust)
+
 8. **H2: Frequently Asked Questions** — exactly 3 Q&As targeting real search queries about this topic
+
 9. **H2: The Bottom Line** — 2–3 sentences wrapping up
 
 SEO RULES:
 - Target keyword appears in H1, first 100 words, and at least 2 H2 headings
 - Use natural keyword variations — don't repeat the exact phrase more than 3 times
-- Aim for 900–1100 words total
+- Aim for 1100–1400 words total (the comparison table and pros/cons add length)
 - At the very end, add: <!-- META: your 150-char meta description here -->
 
 Output clean markdown only. No preamble.\
@@ -419,17 +438,18 @@ READ THE ARTICLE AS A SKEPTICAL HUMAN. Fix these specific issues wherever you fi
 
 1. **Robotic openers** — "In this article, we will explore..." or "Are you looking for..." → rewrite with a hook
 2. **Padding phrases** — "With that being said," / "It is worth noting that" / "Without further ado" → cut them
-3. **Vague product praise** — "great quality" / "very useful" / "highly recommended" → make it specific
-4. **Stiff affiliate link text** — "click here to purchase" / "buy now" → use "→ Check price on Amazon" or weave naturally
-5. **Repetitive product structure** — if every single product entry follows the exact same two-sentence pattern, vary a couple of them
+3. **Vague product praise** — "great quality" / "very useful" / "highly recommended" → make it specific; name what makes it good
+4. **Vague pros/cons** — "Easy to use" or "Small size" alone are not useful → add the why ("Easy to use — single dial, nothing to learn")
+5. **Stiff affiliate link text** — "click here to purchase" / "buy now" → use "→ Check price on Amazon"
 6. **Intro that doesn't hook** — the first sentence must make someone want to keep reading; if it doesn't, rewrite it
 7. **Overly formal tone** — this is a friendly advice blog, not a whitepaper; loosen any stiff language
 
 DO NOT change:
 - The heading structure (H1, H2, H3 hierarchy)
+- The comparison table (preserve it exactly — just fix any obviously wrong data)
+- The Best for / Pros / Cons structure under each product
 - The target keyword usage
 - The product selection or affiliate links
-- The overall article length
 
 Return the full revised article in clean markdown.
 On the very last line, add: <!-- QA: [one sentence summarizing your main changes] -->\

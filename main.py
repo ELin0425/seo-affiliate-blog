@@ -304,7 +304,7 @@ def fetch_hero_image(topic: str, slug: str, date_str: str) -> tuple[Path | None,
             continue
 
         print(f"  QA-ing image by {photographer}...")
-        if _qa_image(img_data, topic):
+        if _qa_image(img_data, topic):  # uses Haiku — just PASS/FAIL
             img_path = img_dir / f"{date_str}-{slug}.jpg"
             img_path.write_bytes(img_data)
             credit = f"Photo by [{photographer}](https://unsplash.com/@{username}) on [Unsplash](https://unsplash.com)"
@@ -322,7 +322,7 @@ def _qa_image(img_data: bytes, topic: str) -> bool:
     b64 = base64.standard_b64encode(img_data).decode("utf-8")
     try:
         response = client.messages.create(
-            model=MODEL,
+            model="claude-haiku-4-5",
             max_tokens=20,
             messages=[{
                 "role": "user",
@@ -421,7 +421,7 @@ Write the full article now."""
 
     response = client.messages.create(
         model=MODEL,
-        max_tokens=5000,
+        max_tokens=3500,
         system=WRITER_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -462,7 +462,7 @@ def qa_review(draft: str, topic: str) -> str:
 
     response = client.messages.create(
         model=MODEL,
-        max_tokens=6000,
+        max_tokens=4000,
         system=QA_SYSTEM,
         messages=[{
             "role": "user",

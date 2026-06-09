@@ -274,8 +274,11 @@ def parse_posts() -> list[dict]:
             if not any(p["asin"] == asin for p in products):
                 products.append({"name": name, "asin": asin, "url": affiliate_url})
 
+        image_match = re.search(r'^image:\s*"(.+?)"', content, re.MULTILINE)
+        image_url = image_match.group(1) if image_match else None
+
         if products:
-            posts.append({"title": title, "url": url, "slug": stem, "products": products})
+            posts.append({"title": title, "url": url, "slug": stem, "products": products, "image_url": image_url})
 
     return posts
 
@@ -308,14 +311,19 @@ def generate_pins():
     for post in posts:
         print(f"\nPost: {post['title']}")
 
-        # Fetch first product image — reused for the article pin
+        # Use the blog's saved hero image first, fall back to Amazon scrape
         first_product = post["products"][0]
-        print(f"  Fetching image for {first_product['name']}...")
-        article_img = fetch_product_image(first_product["asin"])
-        if article_img:
-            print("  Got image from Amazon")
-        else:
-            print("  Using placeholder")
+        article_img = None
+        if post.get("image_url"):
+            img_filename = post["image_url"].split("/")[-1]
+            img_local = BLOG_REPO / "assets" / "images" / "posts" / img_filename
+            if img_local.exists():
+                article_img = Image.open(str(img_local)).convert("RGB")
+                print(f"  Using hero image: {img_filename}")
+        if not article_img:
+            print(f"  Fetching image for {first_product['name']} from Amazon...")
+            article_img = fetch_product_image(first_product["asin"])
+            print("  Got image from Amazon" if article_img else "  Using placeholder")
 
         # ── Article pin (one per post) ──
         article_key = f"article_{post['slug']}"

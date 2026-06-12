@@ -352,7 +352,7 @@ Your voice is warm, direct, and occasionally dry. You never write filler. Every 
 
 ARTICLE STRUCTURE (follow this exactly):
 
-1. **H1 title** — keyword-rich, compelling, specific. IMPORTANT: the exact product count will be given to you in the prompt — use that number in the title (e.g., if 5 products are provided, write "The 5 Best Kitchen Gadgets Under $50 That Are Actually Worth It"). Never invent a number.
+1. **H1 title** — keyword-rich, compelling, specific. CRITICAL: the exact product count is stated in the prompt. Use ONLY that number in the title. If 3 products are listed, the title must say "3". If 5 products, say "5". Never use any other number. Check: count your H3 product sections and verify they match the number in your H1 before finishing.
 
 2. **Intro** (2–3 short paragraphs) — open with a relatable frustration or surprising fact, then promise what they'll leave with. No "In this article we will..." openers.
 
@@ -370,7 +370,7 @@ ARTICLE STRUCTURE (follow this exactly):
 6. **H2: The Best [Topic]** — the main product list. For each product:
    - **H3** with the product name
    - 2–3 sentences: what problem it solves + one specific standout detail (not vague praise)
-   - **Best for:** [one specific use case, e.g. "solo cooks who hate reading manuals"]
+   - `**Best for:**` [one specific use case — inline bold, NOT a heading] e.g. "**Best for:** solo cooks who hate reading manuals"
    - **Pros:** 2–3 bullet points — concrete, specific (e.g. "Basket fits a full chicken breast", not "good capacity")
    - **Cons:** 1–2 bullet points — honest (e.g. "2.6 Qt feels cramped cooking for 3+")
    - Affiliate link on its own line: `[→ Check price on Amazon](URL)`
@@ -584,6 +584,36 @@ def _find_replacement_asin(product_name: str) -> str | None:
     return None
 
 
+def _fix_article_formatting(article: str, num_products: int) -> str:
+    """Deterministic post-processing — catches mistakes the LLM makes regardless of prompting.
+
+    1. Title count: if the H1 contains a number that doesn't match num_products, correct it.
+    2. 'Best for:' headings: model sometimes writes '#### Best for:' (renders large+bold);
+       normalize all occurrences to '**Best for:**' inline bold.
+    """
+    # Fix title number
+    title_match = re.search(r"^(#\s+.*?)$", article, re.MULTILINE)
+    if title_match:
+        title_line = title_match.group(1)
+        fixed = re.sub(r"\b\d+\b", str(num_products), title_line, count=1)
+        if fixed != title_line:
+            print(f"  [fix] Title count corrected: '{title_line.strip()}' -> '{fixed.strip()}'")
+            article = article.replace(title_line, fixed, 1)
+
+    # Fix 'Best for:' formatted as any level heading (H3–H6) -> bold inline label
+    before = article
+    article = re.sub(
+        r"^#{3,6}\s+\*{0,2}[Bb]est\s+[Ff]or:?\*{0,2}\s*",
+        "**Best for:** ",
+        article,
+        flags=re.MULTILINE,
+    )
+    if article != before:
+        print("  [fix] 'Best for:' heading(s) normalized to bold inline label")
+
+    return article
+
+
 def fix_broken_links(article: str) -> str:
     """Replace dead ASINs with live ones. If no replacement found, strips the link text
     so the product description stays but the dead URL is removed. Always returns a
@@ -633,6 +663,7 @@ def run_pipeline(topic: str = None):
 
     print("Step 4/6 — QA review...")
     final = qa_review(draft, topic)
+    final = _fix_article_formatting(final, len(products))
 
     print("Step 5/6 — Validating affiliate links...")
     broken = _dead_asins(final)

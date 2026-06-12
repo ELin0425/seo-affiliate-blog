@@ -352,7 +352,7 @@ Your voice is warm, direct, and occasionally dry. You never write filler. Every 
 
 ARTICLE STRUCTURE (follow this exactly):
 
-1. **H1 title** — keyword-rich, compelling, specific (e.g., "The 8 Best Kitchen Gadgets Under $50 That Are Actually Worth It")
+1. **H1 title** — keyword-rich, compelling, specific. IMPORTANT: the exact product count will be given to you in the prompt — use that number in the title (e.g., if 5 products are provided, write "The 5 Best Kitchen Gadgets Under $50 That Are Actually Worth It"). Never invent a number.
 
 2. **Intro** (2–3 short paragraphs) — open with a relatable frustration or surprising fact, then promise what they'll leave with. No "In this article we will..." openers.
 
@@ -407,11 +407,12 @@ def write_article(topic: str, competitor_data: list, products: list) -> str:
         for p in products
     )
 
+    num_products = len(products)
     prompt = f"""Write a complete SEO article for this keyword:
 
 **Target keyword:** {topic}
 
-**Products to feature** (pick 5–7 most relevant; use their exact affiliate URLs):
+**Products to feature** — feature ALL {num_products} products listed below, in the order given. Do not skip any. Use their exact affiliate URLs:
 {product_list}
 
 **Competitor articles for reference** (study their H2 topics and what they cover; write something better):
@@ -421,7 +422,7 @@ Write the full article now."""
 
     response = client.messages.create(
         model=MODEL,
-        max_tokens=3500,
+        max_tokens=6000,
         system=WRITER_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
     )

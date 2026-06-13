@@ -571,13 +571,19 @@ def _dead_asins(article: str) -> list[str]:
 
 
 def _find_replacement_asin(product_name: str) -> str | None:
-    """Search Amazon for a live replacement ASIN given a product name."""
+    """Search Amazon directly for a product and return the first live ASIN."""
+    query = product_name.replace(" ", "+")
+    url = f"https://www.amazon.com/s?k={query}"
     try:
-        with DDGS() as ddgs:
-            hits = list(ddgs.text(f"site:amazon.com {product_name}", max_results=8))
-        for hit in hits:
-            asin = _extract_asin(hit.get("href", ""))
-            if asin and _validate_asin(asin):
+        resp = requests.get(url, timeout=10, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        })
+        soup = BeautifulSoup(resp.text, "html.parser")
+        # ASINs are in data-asin attributes on result cards
+        for tag in soup.find_all(attrs={"data-asin": True}):
+            asin = tag["data-asin"].strip()
+            if re.match(r"^[A-Z0-9]{10}$", asin) and _validate_asin(asin):
                 return asin
     except Exception:
         pass

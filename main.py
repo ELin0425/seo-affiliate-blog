@@ -614,6 +614,25 @@ def _fix_article_formatting(article: str, num_products: int) -> str:
     return article
 
 
+def _products_missing_links(article: str) -> list[str]:
+    """Return names of H3 product sections that contain no affiliate link.
+
+    Catches the case where the model hallucinated extra products beyond what
+    was provided, writing generic placeholders with no real Amazon URL.
+    """
+    missing = []
+    parts = re.split(r'^(### .+)$', article, flags=re.MULTILINE)
+    # parts: [pre-content, heading, section-body, heading, section-body, ...]
+    i = 1
+    while i < len(parts) - 1:
+        heading = parts[i]
+        body = parts[i + 1]
+        if "amazon.com/dp/" not in body:
+            missing.append(heading.lstrip("#").strip())
+        i += 2
+    return missing
+
+
 def fix_broken_links(article: str) -> str:
     """Replace dead ASINs with live ones. If no replacement found, strips the link text
     so the product description stays but the dead URL is removed. Always returns a
@@ -677,6 +696,14 @@ def run_pipeline(topic: str = None):
             print(f"  All broken links fixed")
     else:
         print(f"  All affiliate links OK")
+
+    no_link = _products_missing_links(final)
+    if no_link:
+        raise ValueError(
+            f"Article has {len(no_link)} product section(s) with no affiliate link "
+            f"(model likely hallucinated placeholder products):\n"
+            + "\n".join(f"  - {n}" for n in no_link)
+        )
 
     slug = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:60]
     date_str = datetime.now().strftime("%Y-%m-%d")

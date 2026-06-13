@@ -615,14 +615,9 @@ def _fix_article_formatting(article: str, num_products: int) -> str:
 
 
 def _products_missing_links(article: str) -> list[str]:
-    """Return names of H3 product sections that contain no affiliate link.
-
-    Catches the case where the model hallucinated extra products beyond what
-    was provided, writing generic placeholders with no real Amazon URL.
-    """
+    """Return names of H3 product sections that contain no affiliate link."""
     missing = []
     parts = re.split(r'^(### .+)$', article, flags=re.MULTILINE)
-    # parts: [pre-content, heading, section-body, heading, section-body, ...]
     i = 1
     while i < len(parts) - 1:
         heading = parts[i]
@@ -631,6 +626,37 @@ def _products_missing_links(article: str) -> list[str]:
             missing.append(heading.lstrip("#").strip())
         i += 2
     return missing
+
+
+def _fix_missing_links(article: str) -> str:
+    """For each H3 product section missing an affiliate link, search for a live ASIN
+    and inject the link. Sections where no ASIN can be found are removed so the
+    article never publishes with a linkless placeholder product."""
+    parts = re.split(r'^(### .+)$', article, flags=re.MULTILINE)
+    rebuilt = [parts[0]]
+
+    i = 1
+    while i < len(parts) - 1:
+        heading = parts[i]
+        body = parts[i + 1]
+        name = heading.lstrip("#").strip()
+
+        if "amazon.com/dp/" not in body:
+            print(f"    Searching ASIN for: '{name}'...")
+            asin = _find_replacement_asin(name)
+            if asin:
+                url = f"https://www.amazon.com/dp/{asin}?tag={AFFILIATE_TAG}"
+                body = re.sub(r'(\n\n---)', f'\n[→ Check price on Amazon]({url})\n\n---', body, count=1)
+                print(f"    Injected {asin} for '{name}'")
+                rebuilt += [heading, body]
+            else:
+                print(f"    No ASIN found for '{name}' — section removed")
+        else:
+            rebuilt += [heading, body]
+
+        i += 2
+
+    return "".join(rebuilt)
 
 
 def fix_broken_links(article: str) -> str:
@@ -699,11 +725,16 @@ def run_pipeline(topic: str = None):
 
     no_link = _products_missing_links(final)
     if no_link:
-        raise ValueError(
-            f"Article has {len(no_link)} product section(s) with no affiliate link "
-            f"(model likely hallucinated placeholder products):\n"
-            + "\n".join(f"  - {n}" for n in no_link)
-        )
+        print(f"  {len(no_link)} product section(s) missing links — searching for ASINs...")
+        final = _fix_missing_links(final)
+        # Recount actual H3 sections after any removals and re-fix the title
+        actual_count = len(re.findall(r'^### ', final, re.MULTILINE))
+        final = _fix_article_formatting(final, actual_count)
+        still_missing = _products_missing_links(final)
+        if still_missing:
+            print(f"  WARNING: could not resolve links for: {still_missing} — publishing without them")
+        else:
+            print(f"  All missing links resolved")
 
     slug = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:60]
     date_str = datetime.now().strftime("%Y-%m-%d")

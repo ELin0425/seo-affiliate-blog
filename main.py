@@ -435,6 +435,16 @@ QA_SYSTEM = """\
 You are a sharp editor who reviews affiliate blog articles before they go live.
 Your job is to make sure the article sounds like it was written by a real person who actually cooks — not an AI.
 
+FIRST — NUMBER CONSISTENCY CHECK (do this before anything else):
+Count the H3 product sections in the article. Call this N.
+Then verify ALL of the following equal N:
+- The number in the H1 title (e.g. "The 5 Best...")
+- The number mentioned in the intro paragraphs (e.g. "I found five picks")
+- The number of items in the Quick Picks list
+- The number of data rows in the comparison table (not counting header or separator)
+If ANY of these differ from N, fix them all to match N before doing anything else.
+This is a hard requirement — do not submit a review where these numbers differ.
+
 READ THE ARTICLE AS A SKEPTICAL HUMAN. Fix these specific issues wherever you find them:
 
 1. **Robotic openers** — "In this article, we will explore..." or "Are you looking for..." → rewrite with a hook
@@ -447,7 +457,6 @@ READ THE ARTICLE AS A SKEPTICAL HUMAN. Fix these specific issues wherever you fi
 
 DO NOT change:
 - The heading structure (H1, H2, H3 hierarchy)
-- The comparison table (preserve it exactly — just fix any obviously wrong data)
 - The Best for / Pros / Cons structure under each product
 - The target keyword usage
 - The product selection or affiliate links
@@ -660,23 +669,74 @@ def _find_replacement_asin(product_name: str) -> str | None:
     return None
 
 
-def _fix_article_formatting(article: str, num_products: int) -> str:
-    """Deterministic post-processing — catches mistakes the LLM makes regardless of prompting.
+_NUM_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+_NUM_WORDS_REV = {v: k for k, v in _NUM_WORDS.items()}
 
-    1. Title count: if the H1 contains a number that doesn't match num_products, correct it.
-    2. 'Best for:' headings: model sometimes writes '#### Best for:' (renders large+bold);
-       normalize all occurrences to '**Best for:**' inline bold.
+
+def _fix_article_formatting(article: str, num_products: int) -> str:
+    """Deterministic post-processing — fixes all number inconsistencies and formatting issues.
+
+    1. Title count: correct any digit in H1 to match num_products.
+    2. Intro numbers: fix digit or word numbers in the intro section.
+    3. Quick Picks count: remove extra items if count exceeds num_products.
+    4. Comparison table: remove extra data rows if count exceeds num_products.
+    5. 'Best for:' headings: normalize to inline bold.
     """
-    # Fix title number
+    # 1. Fix title number
     title_match = re.search(r"^(#\s+.*?)$", article, re.MULTILINE)
     if title_match:
         title_line = title_match.group(1)
         fixed = re.sub(r"\b\d+\b", str(num_products), title_line, count=1)
         if fixed != title_line:
-            print(f"  [fix] Title count corrected: '{title_line.strip()}' -> '{fixed.strip()}'")
+            print(f"  [fix] Title count: '{title_line.strip()}' -> '{fixed.strip()}'")
             article = article.replace(title_line, fixed, 1)
 
-    # Fix 'Best for:' formatted as any level heading (H3–H6) -> bold inline label
+    # 2. Fix number words/digits in intro (text before first ## heading)
+    intro_end = article.find("\n##")
+    if intro_end > 0:
+        intro = article[:intro_end]
+        # Fix word numbers
+        for word, num in _NUM_WORDS.items():
+            if num != num_products and re.search(rf"\b{word}\b", intro, re.IGNORECASE):
+                correct = _NUM_WORDS_REV.get(num_products, str(num_products))
+                fixed_intro = re.sub(rf"\b{word}\b", correct, intro, count=1, flags=re.IGNORECASE)
+                if fixed_intro != intro:
+                    print(f"  [fix] Intro number word: '{word}' -> '{correct}'")
+                    article = fixed_intro + article[intro_end:]
+                    intro = fixed_intro
+                    break
+        # Fix digit numbers (re-read intro in case it changed)
+        intro = article[:article.find("\n##")]
+        for digit in range(2, 15):
+            if digit != num_products and re.search(rf"\b{digit}\b", intro):
+                fixed_intro = re.sub(rf"\b{digit}\b", str(num_products), intro, count=1)
+                if fixed_intro != intro:
+                    print(f"  [fix] Intro digit: '{digit}' -> '{num_products}'")
+                    article = fixed_intro + article[article.find("\n##"):]
+                    break
+
+    # 3. Fix Quick Picks — remove extra bullet lines beyond num_products
+    qp_match = re.search(r"(## Quick Picks\s*\n)((?:- \*\*.+\n?)+)", article)
+    if qp_match:
+        qp_items = re.findall(r"^- \*\*.+$", qp_match.group(2), re.MULTILINE)
+        if len(qp_items) > num_products:
+            kept = "\n".join(qp_items[:num_products]) + "\n"
+            article = article[:qp_match.start(2)] + kept + article[qp_match.end(2):]
+            print(f"  [fix] Quick Picks trimmed from {len(qp_items)} -> {num_products} items")
+
+    # 4. Fix comparison table — remove extra data rows beyond num_products
+    table_match = re.search(r"(\|.+\|\n\|[-| :]+\|\n)((?:\|.+\|\n?)*)", article)
+    if table_match:
+        data_rows = re.findall(r"^\|.+\|$", table_match.group(2), re.MULTILINE)
+        if len(data_rows) > num_products:
+            kept = "\n".join(data_rows[:num_products]) + "\n"
+            article = article[:table_match.start(2)] + kept + article[table_match.end(2):]
+            print(f"  [fix] Comparison table trimmed from {len(data_rows)} -> {num_products} rows")
+
+    # 5. Fix 'Best for:' formatted as any level heading (H3–H6) -> bold inline label
     before = article
     article = re.sub(
         r"^#{3,6}\s+\*{0,2}[Bb]est\s+[Ff]or:?\*{0,2}\s*",

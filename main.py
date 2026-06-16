@@ -525,7 +525,7 @@ def _inject_related_posts(article: str, current_slug: str) -> str:
         content = filepath.read_text(encoding="utf-8")
         title_m = re.search(r'^title:\s*["\']?(.+?)["\']?\s*$', content, re.MULTILINE)
         title = title_m.group(1).strip("\"'") if title_m else slug.replace("-", " ").title()
-        url = f"https://elin0425.github.io/kitchen-finds/{year}/{month}/{day}/{slug}/"
+        url = f"https://kitchen-finds.com/{year}/{month}/{day}/{slug}/"
         posts.append({"title": title, "url": url})
 
     if not posts:
@@ -607,7 +607,7 @@ def publish_to_blog(topic: str, article: str, hero_path: Path | None = None, her
     filepath.write_text(frontmatter + hero_block + clean_article, encoding="utf-8")
 
     year, month, day = date_str.split("-")
-    live_url = f"https://elin0425.github.io/kitchen-finds/{year}/{month}/{day}/{slug}/"
+    live_url = f"https://kitchen-finds.com/{year}/{month}/{day}/{slug}/"
 
     if os.getenv("GITHUB_ACTIONS"):
         return live_url

@@ -475,7 +475,67 @@ def qa_review(draft: str, topic: str) -> str:
 
 # ── Save & Publish ────────────────────────────────────────────────────────────
 
-def _make_frontmatter(topic: str, article: str, layout: str = "post", image_url: str = None) -> tuple[str, str, str]:
+def _yaml_str(s: str) -> str:
+    """Escape a string for safe embedding in a YAML double-quoted scalar."""
+    s = " ".join(s.split())
+    s = s.replace("\\", "\\\\")
+    s = s.replace('"', '\\"')
+    return f'"{s}"'
+
+
+def _extract_faq(article: str) -> list[dict]:
+    """Extract FAQ Q&A pairs for JSON-LD schema markup."""
+    faq_match = re.search(r"## Frequently Asked Questions\s*\n([\s\S]+?)(?:\n---|\n## |\Z)", article)
+    if not faq_match:
+        return []
+
+    faq_block = faq_match.group(1).strip()
+    # re.split with a capturing group yields [pre, q1, a1, q2, a2, ...]
+    chunks = re.split(r"\n*\*\*([^*]+?\?)\*\*\s*\n", faq_block)
+
+    pairs = []
+    i = 1
+    while i < len(chunks) - 1:
+        q = chunks[i].strip()
+        a = re.split(r"\n\n", chunks[i + 1].strip())[0].strip()
+        if q and a:
+            pairs.append({"q": q, "a": a})
+        i += 2
+    return pairs
+
+
+def _inject_related_posts(article: str, current_slug: str) -> str:
+    """Append a 'Related Articles' section linking to other posts on the site."""
+    if "## Related Articles" in article:
+        return article
+
+    posts_dir = BLOG_REPO / "_posts"
+    if not posts_dir.exists():
+        return article
+
+    posts = []
+    for filepath in sorted(posts_dir.glob("*.md"), reverse=True):
+        m = re.match(r"(\d{4})-(\d{2})-(\d{2})-(.+)", filepath.stem)
+        if not m:
+            continue
+        year, month, day, slug = m.groups()
+        if slug == current_slug:
+            continue
+
+        content = filepath.read_text(encoding="utf-8")
+        title_m = re.search(r'^title:\s*["\']?(.+?)["\']?\s*$', content, re.MULTILINE)
+        title = title_m.group(1).strip("\"'") if title_m else slug.replace("-", " ").title()
+        url = f"https://elin0425.github.io/kitchen-finds/{year}/{month}/{day}/{slug}/"
+        posts.append({"title": title, "url": url})
+
+    if not posts:
+        return article
+
+    links = "\n".join(f"- [{p['title']}]({p['url']})" for p in posts[:3])
+    return article + f"\n\n---\n\n## Related Articles\n\n{links}\n"
+
+
+def _make_frontmatter(topic: str, article: str, layout: str = "post", image_url: str = None, faq: list = None) -> tuple[str, str, str]:
     """Return (frontmatter, slug, date_str) for an article."""
     slug = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:60]
     date_str = datetime.now().strftime("%Y-%m-%d")
@@ -487,6 +547,15 @@ def _make_frontmatter(topic: str, article: str, layout: str = "post", image_url:
     title = title_match.group(1).strip() if title_match else topic
 
     image_line = f'image: "{image_url}"\n' if image_url else ""
+
+    faq_yaml = ""
+    if faq:
+        lines = ["faq:"]
+        for item in faq:
+            lines.append(f"  - q: {_yaml_str(item['q'])}")
+            lines.append(f"    a: {_yaml_str(item['a'])}")
+        faq_yaml = "\n".join(lines) + "\n"
+
     frontmatter = (
         f"---\n"
         f"layout: {layout}\n"
@@ -495,6 +564,7 @@ def _make_frontmatter(topic: str, article: str, layout: str = "post", image_url:
         f'description: "{meta_desc}"\n'
         f"categories: [kitchen, gadgets]\n"
         f"{image_line}"
+        f"{faq_yaml}"
         f"---\n\n"
     )
     return frontmatter, slug, date_str
@@ -509,22 +579,22 @@ def _clean_for_publish(article: str) -> str:
     return article.strip()
 
 
-def save_article(topic: str, article: str) -> Path:
+def save_article(topic: str, article: str, faq: list = None) -> Path:
     """Save a local review copy to articles/."""
     OUTPUT_DIR.mkdir(exist_ok=True)
-    frontmatter, slug, date_str = _make_frontmatter(topic, article)
+    frontmatter, slug, date_str = _make_frontmatter(topic, article, faq=faq)
     filepath = OUTPUT_DIR / f"{date_str}-{slug}.md"
     filepath.write_text(frontmatter + article, encoding="utf-8")
     return filepath
 
 
-def publish_to_blog(topic: str, article: str, hero_path: Path | None = None, hero_credit: str | None = None) -> str:
+def publish_to_blog(topic: str, article: str, hero_path: Path | None = None, hero_credit: str | None = None, faq: list = None) -> str:
     """Copy article to the blog repo and push to GitHub Pages."""
     posts_dir = BLOG_REPO / "_posts"
     posts_dir.mkdir(parents=True, exist_ok=True)
 
     image_url = f"/kitchen-finds/assets/images/posts/{hero_path.name}" if (hero_path and hero_path.exists()) else None
-    frontmatter, slug, date_str = _make_frontmatter(topic, article, layout="post", image_url=image_url)
+    frontmatter, slug, date_str = _make_frontmatter(topic, article, layout="post", image_url=image_url, faq=faq)
     clean_article = _clean_for_publish(article)
 
     hero_block = ""
@@ -696,6 +766,9 @@ def run_pipeline(topic: str = None):
     if not topic:
         topic = get_next_topic()
 
+    slug = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:60]
+    date_str = datetime.now().strftime("%Y-%m-%d")
+
     print(f"\n{'='*60}")
     print(f"  Topic: {topic}")
     print(f"{'='*60}\n")
@@ -742,14 +815,19 @@ def run_pipeline(topic: str = None):
         else:
             print(f"  All missing links resolved")
 
-    slug = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:60]
-    date_str = datetime.now().strftime("%Y-%m-%d")
+    print("Step 5b/6 — Internal links + FAQ schema...")
+    final = _inject_related_posts(final, slug)
+    faq_data = _extract_faq(final)
+    if faq_data:
+        print(f"  Related articles injected; {len(faq_data)} FAQ items extracted for schema")
+    else:
+        print("  No FAQ section found — schema skipped")
 
     print("Step 6/6 — Hero image...")
     hero_path, hero_credit = fetch_hero_image(topic, slug, date_str)
 
-    local_path = save_article(topic, final)
-    live_url = publish_to_blog(topic, final, hero_path=hero_path, hero_credit=hero_credit)
+    local_path = save_article(topic, final, faq=faq_data)
+    live_url = publish_to_blog(topic, final, hero_path=hero_path, hero_credit=hero_credit, faq=faq_data)
 
     word_count = len(re.sub(r"---.*?---", "", final, flags=re.DOTALL).split())
     qa_match = re.search(r"<!--\s*QA:\s*(.+?)\s*-->", final)

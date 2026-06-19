@@ -345,10 +345,10 @@ ARTICLE STRUCTURE (follow this exactly):
 2. **Intro** (2–3 short paragraphs) — open with a relatable frustration or surprising fact, then promise what they'll leave with. No "In this article we will..." openers.
 
 3. **Quick Picks** — a short bolded list of all products. Format each line as:
-   - **[Label]:** [Product Name] — [one-line reason]
+   - **[Label]:** [Product Name]: [one-line reason]
    Use labels like: Best overall, Best for beginners, Best compact, Best value, Best no-frills, etc.
 
-4. **Comparison table** — a markdown table immediately after Quick Picks. Columns: Product | Best For | Capacity | Key Perk. Fill in what you know from the product context; use "—" if a spec is unknown. Example:
+4. **Comparison table** — a markdown table immediately after Quick Picks. Columns: Product | Best For | Capacity | Key Perk. Fill in what you know from the product context; use "N/A" if a spec is unknown. Example:
    | Product | Best For | Capacity | Key Perk |
    |---|---|---|---|
    | DASH Tasti-Crisp | Beginners | 2.6 Qt | One-dial simplicity |
@@ -358,9 +358,9 @@ ARTICLE STRUCTURE (follow this exactly):
 6. **H2: The Best [Topic]** — the main product list. For each product:
    - **H3** with the product name
    - 2–3 sentences: what problem it solves + one specific standout detail (not vague praise)
-   - `**Best for:**` [one specific use case — inline bold, NOT a heading] e.g. "**Best for:** solo cooks who hate reading manuals"
-   - **Pros:** 2–3 bullet points — concrete, specific (e.g. "Basket fits a full chicken breast", not "good capacity")
-   - **Cons:** 1–2 bullet points — honest (e.g. "2.6 Qt feels cramped cooking for 3+")
+   - `**Best for:**` [one specific use case, inline bold, NOT a heading] e.g. "**Best for:** solo cooks who hate reading manuals"
+   - **Pros:** 2–3 bullet points, concrete and specific (e.g. "Basket fits a full chicken breast", not "good capacity")
+   - **Cons:** 1–2 bullet points, honest (e.g. "2.6 Qt feels cramped cooking for 3+")
    - Affiliate link on its own line: `[→ Check price on Amazon](URL)`
 
 7. **H2: What to Skip** — 2–3 short bullets on things to avoid in this category (builds trust)
@@ -374,6 +374,9 @@ SEO RULES:
 - Use natural keyword variations — don't repeat the exact phrase more than 3 times
 - Aim for 1100–1400 words total (the comparison table and pros/cons add length)
 - At the very end, add: <!-- META: your 150-char meta description here -->
+
+STYLE RULES:
+- Never use em dashes (—). Use a comma, colon, or rewrite the sentence instead.
 
 Output clean markdown only. No preamble.\
 """
@@ -435,10 +438,11 @@ READ THE ARTICLE AS A SKEPTICAL HUMAN. Fix these specific issues wherever you fi
 1. **Robotic openers** — "In this article, we will explore..." or "Are you looking for..." → rewrite with a hook
 2. **Padding phrases** — "With that being said," / "It is worth noting that" / "Without further ado" → cut them
 3. **Vague product praise** — "great quality" / "very useful" / "highly recommended" → make it specific; name what makes it good
-4. **Vague pros/cons** — "Easy to use" or "Small size" alone are not useful → add the why ("Easy to use — single dial, nothing to learn")
+4. **Vague pros/cons** — "Easy to use" or "Small size" alone are not useful → add the why (e.g. "Easy to use: single dial, nothing to learn")
 5. **Stiff affiliate link text** — "click here to purchase" / "buy now" → use "→ Check price on Amazon"
 6. **Intro that doesn't hook** — the first sentence must make someone want to keep reading; if it doesn't, rewrite it
 7. **Overly formal tone** — this is a friendly advice blog, not a whitepaper; loosen any stiff language
+8. **Em dashes** — replace every em dash (—) with a comma, colon, or reworded sentence. Em dashes are an AI tell and real people rarely write with them.
 
 DO NOT change:
 - The heading structure (H1, H2, H3 hierarchy)
@@ -570,6 +574,9 @@ def _clean_for_publish(article: str) -> str:
     article = re.sub(r"^\*Disclosure:.*?\*\n?", "", article, flags=re.MULTILINE)
     article = re.sub(r"<!--\s*META:.*?-->", "", article)
     article = re.sub(r"<!--\s*QA:.*?-->", "", article)
+    # Hard remove any em dashes that slipped through the prompts
+    article = article.replace(" — ", ", ")  # spaced em dash -> comma
+    article = article.replace("—", ", ")      # unspaced em dash -> comma
     return article.strip()
 
 

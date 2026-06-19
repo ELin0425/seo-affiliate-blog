@@ -382,6 +382,53 @@ Output clean markdown only. No preamble.\
 """
 
 
+GUIDE_SYSTEM = """\
+You are an experienced home cook who has been writing practical kitchen guides for ten years.
+Your articles are read by real people who want clear, useful answers, not padding.
+
+You write like a knowledgeable friend: direct, warm, occasionally dry. Every sentence earns its place.
+
+ARTICLE STRUCTURE (follow this exactly):
+
+1. **H1 title** — keyword-rich, specific, and useful-sounding. No clickbait.
+
+2. **Intro** (2–3 short paragraphs) — open with a relatable frustration or a surprising fact.
+   Hook the reader in the first sentence. No "In this article we will..." openers.
+
+3. **H2 sections** covering the full topic in logical order. Use as many H2s as the topic needs.
+   Each section should be 2–4 short paragraphs. Use H3s only when a section has distinct sub-steps.
+   Write in plain English. If there are steps, number them. If there are options, compare them honestly.
+
+4. **H2: Frequently Asked Questions** — exactly 3 Q&As targeting real follow-up searches about this topic.
+
+5. **H2: The Bottom Line** — 2–3 sentences wrapping up the key takeaway.
+
+STYLE RULES:
+- No em dashes (—). Use a comma, colon, or rewrite the sentence instead.
+- No filler phrases: "With that being said," / "It is worth noting" / "Without further ado"
+- No vague advice: say exactly what to do, how long, at what temperature, with what tool
+- If a related product is genuinely useful to mention, mention it naturally in context. Do not force it.
+- At the natural end of the article (before FAQ), add one short paragraph that links internally to a
+  related roundup post on the site if one exists. Keep it 1–2 sentences, not salesy.
+
+SEO RULES:
+- Target keyword in H1, first 100 words, and at least 2 H2 headings
+- Aim for 900–1200 words total
+- At the very end, add: <!-- META: your 150-char meta description here -->
+
+Output clean markdown only. No preamble.\
+"""
+
+_INFORMATIONAL_PREFIXES = (
+    "how ", "when ", "why ", "what ", "is ", "are ", "does ", "can ",
+    "should ", "tips ", "guide ", "the best way",
+)
+
+
+def is_informational(topic: str) -> bool:
+    return topic.lower().startswith(_INFORMATIONAL_PREFIXES)
+
+
 def write_article(topic: str, competitor_data: list, products: list) -> str:
     """Generate the full SEO article with Claude."""
     print("  Writing article draft...")
@@ -415,6 +462,53 @@ Write the full article now."""
         model=MODEL,
         max_tokens=6000,
         system=WRITER_SYSTEM,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.content[0].text
+
+
+def write_guide(topic: str, competitor_data: list) -> str:
+    """Generate an informational guide (no product list)."""
+    print("  Writing guide draft...")
+
+    competitor_notes = ""
+    if competitor_data:
+        for comp in competitor_data:
+            headings_text = "\n".join(f"  {h}" for h in comp["headings"])
+            competitor_notes += f"\nCompetitor: {comp['url'][:70]}\nHeadings:\n{headings_text}\nIntro excerpt: {comp['intro'][:200]}\n"
+
+    # Build a list of existing roundup posts for potential internal linking
+    related_posts = []
+    if (BLOG_REPO / "_posts").exists():
+        for f in sorted((BLOG_REPO / "_posts").glob("*.md"), reverse=True):
+            m = re.match(r"(\d{4})-(\d{2})-(\d{2})-(.+)", f.stem)
+            if not m:
+                continue
+            year, month, day, slug = m.groups()
+            content = f.read_text(encoding="utf-8")
+            title_m = re.search(r'^title:\s*["\']?(.+?)["\']?\s*$', content, re.MULTILINE)
+            title = title_m.group(1).strip("\"'") if title_m else slug.replace("-", " ").title()
+            url = f"https://kitchen-finds.com/{year}/{month}/{day}/{slug}/"
+            related_posts.append(f"- [{title}]({url})")
+
+    related_section = "\n".join(related_posts[:5]) if related_posts else "(none yet)"
+
+    prompt = f"""Write a complete how-to guide for this topic:
+
+**Topic:** {topic}
+
+**Existing posts on this site you can link to naturally** (pick the most relevant one if it fits):
+{related_section}
+
+**Competitor articles for reference** (study their H2 structure; write something better and more useful):
+{competitor_notes if competitor_notes else "(none found — rely on your expertise)"}
+
+Write the full guide now."""
+
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=6000,
+        system=GUIDE_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
     )
     return response.content[0].text
@@ -856,48 +950,65 @@ def _run_one(topic: str) -> str:
     print(f"  Topic: {topic}")
     print(f"{'='*60}\n")
 
+    guide_mode = is_informational(topic)
+    post_type = "guide" if guide_mode else "roundup"
+    print(f"  Type: {post_type}\n")
+
     print("Step 1/6 — Competitor research...")
     competitors = search_competitors(topic)
     print(f"  {len(competitors)} competitor articles analyzed\n")
 
-    print("Step 2/6 — Product research...")
-    products = research_products(topic)
-    print(f"  {len(products)} valid products ready\n")
+    if guide_mode:
+        print("Step 2/6 — Skipping product research (informational post)\n")
+        products = []
 
-    print("Step 3/6 — Writing article...")
-    draft = write_article(topic, competitors, products)
-    print(f"  Draft: ~{len(draft.split())} words\n")
+        print("Step 3/6 — Writing guide...")
+        draft = write_guide(topic, competitors)
+        print(f"  Draft: ~{len(draft.split())} words\n")
 
-    print("Step 4/6 — QA review...")
-    final = qa_review(draft, topic)
-    _assert_article_valid(final, topic)
-    final = _fix_article_formatting(final, len(products))
+        print("Step 4/6 — QA review...")
+        final = qa_review(draft, topic)
 
-    print("Step 5/6 — Validating affiliate links...")
-    broken = _dead_asins(final)
-    if broken:
-        print(f"  {len(broken)} dead link(s) found — auto-fixing...")
-        final = fix_broken_links(final)
-        remaining = _dead_asins(final)
-        if remaining:
-            print(f"  Could not replace {len(remaining)} ASIN(s): {', '.join(remaining)} — links stripped, article still publishing")
-        else:
-            print(f"  All broken links fixed")
+        print("Step 5/6 — Skipping affiliate link validation (informational post)\n")
+
     else:
-        print(f"  All affiliate links OK")
+        print("Step 2/6 — Product research...")
+        products = research_products(topic)
+        print(f"  {len(products)} valid products ready\n")
 
-    no_link = _products_missing_links(final)
-    if no_link:
-        print(f"  {len(no_link)} product section(s) missing links — searching for ASINs...")
-        final = _fix_missing_links(final)
-        # Recount actual H3 sections after any removals and re-fix the title
-        actual_count = len(re.findall(r'^### ', final, re.MULTILINE))
-        final = _fix_article_formatting(final, actual_count)
-        still_missing = _products_missing_links(final)
-        if still_missing:
-            print(f"  WARNING: could not resolve links for: {still_missing} — publishing without them")
+        print("Step 3/6 — Writing article...")
+        draft = write_article(topic, competitors, products)
+        print(f"  Draft: ~{len(draft.split())} words\n")
+
+        print("Step 4/6 — QA review...")
+        final = qa_review(draft, topic)
+        _assert_article_valid(final, topic)
+        final = _fix_article_formatting(final, len(products))
+
+        print("Step 5/6 — Validating affiliate links...")
+        broken = _dead_asins(final)
+        if broken:
+            print(f"  {len(broken)} dead link(s) found — auto-fixing...")
+            final = fix_broken_links(final)
+            remaining = _dead_asins(final)
+            if remaining:
+                print(f"  Could not replace {len(remaining)} ASIN(s): {', '.join(remaining)} — links stripped, article still publishing")
+            else:
+                print(f"  All broken links fixed")
         else:
-            print(f"  All missing links resolved")
+            print(f"  All affiliate links OK")
+
+        no_link = _products_missing_links(final)
+        if no_link:
+            print(f"  {len(no_link)} product section(s) missing links — searching for ASINs...")
+            final = _fix_missing_links(final)
+            actual_count = len(re.findall(r'^### ', final, re.MULTILINE))
+            final = _fix_article_formatting(final, actual_count)
+            still_missing = _products_missing_links(final)
+            if still_missing:
+                print(f"  WARNING: could not resolve links for: {still_missing} — publishing without them")
+            else:
+                print(f"  All missing links resolved")
 
     print("Step 5b/6 — Internal links + FAQ schema...")
     final = _inject_related_posts(final, slug)

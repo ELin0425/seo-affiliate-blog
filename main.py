@@ -54,8 +54,8 @@ class SkipTopicError(Exception):
 def get_candidate_topics() -> list[str]:
     """Return all unprocessed topics from topics.txt, in order.
 
-    In CI: excludes topics that already have a matching post in _posts/.
-    Locally: excludes topics already marked DONE:.
+    Always excludes topics already marked DONE: in topics.txt AND topics that
+    already have a matching post file in _posts/ (catches duplicates on local runs too).
     """
     lines = TOPICS_FILE.read_text(encoding="utf-8").splitlines()
     candidates = [
@@ -66,23 +66,20 @@ def get_candidate_topics() -> list[str]:
     if not candidates:
         raise ValueError("No more topics in topics.txt — add some!")
 
-    if os.getenv("GITHUB_ACTIONS"):
-        published = {
-            re.sub(r"^\d{4}-\d{2}-\d{2}-", "", f.stem)
-            for f in (BLOG_REPO / "_posts").glob("*.md")
-        } if (BLOG_REPO / "_posts").exists() else set()
+    published = {
+        re.sub(r"^\d{4}-\d{2}-\d{2}-", "", f.stem)
+        for f in (BLOG_REPO / "_posts").glob("*.md")
+    } if (BLOG_REPO / "_posts").exists() else set()
 
-        unpublished = [
-            t for t in candidates
-            if re.sub(r"[^a-z0-9]+", "-", t.lower()).strip("-")[:60] not in published
-        ]
+    unpublished = [
+        t for t in candidates
+        if re.sub(r"[^a-z0-9]+", "-", t.lower()).strip("-")[:60] not in published
+    ]
 
-        if not unpublished:
-            raise ValueError("All topics already published — add new ones to topics.txt!")
+    if not unpublished:
+        raise ValueError("All topics already published — add new ones to topics.txt!")
 
-        return unpublished
-
-    return candidates
+    return unpublished
 
 
 def mark_topic_done(topic: str) -> None:

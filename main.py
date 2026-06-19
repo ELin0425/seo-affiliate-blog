@@ -47,11 +47,15 @@ client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
 # ── Topic Management ──────────────────────────────────────────────────────────
 
-def get_next_topic() -> str:
-    """Return the first unprocessed topic from topics.txt.
+class SkipTopicError(Exception):
+    """Raised when a topic can't be processed and the pipeline should try the next one."""
 
-    In CI (GitHub Actions): picks the first topic not already published in _posts/.
-    Locally: marks the topic DONE in topics.txt so it's skipped next run.
+
+def get_candidate_topics() -> list[str]:
+    """Return all unprocessed topics from topics.txt, in order.
+
+    In CI: excludes topics that already have a matching post in _posts/.
+    Locally: excludes topics already marked DONE:.
     """
     lines = TOPICS_FILE.read_text(encoding="utf-8").splitlines()
     candidates = [
@@ -63,28 +67,34 @@ def get_next_topic() -> str:
         raise ValueError("No more topics in topics.txt — add some!")
 
     if os.getenv("GITHUB_ACTIONS"):
-        # Skip topics that already have a matching post file
         published = {
             re.sub(r"^\d{4}-\d{2}-\d{2}-", "", f.stem)
             for f in (BLOG_REPO / "_posts").glob("*.md")
         } if (BLOG_REPO / "_posts").exists() else set()
 
-        for topic in candidates:
-            slug = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:60]
-            if slug not in published:
-                return topic
+        unpublished = [
+            t for t in candidates
+            if re.sub(r"[^a-z0-9]+", "-", t.lower()).strip("-")[:60] not in published
+        ]
 
-        raise ValueError("All topics already published — add new ones to topics.txt!")
+        if not unpublished:
+            raise ValueError("All topics already published — add new ones to topics.txt!")
 
-    # Local: mark first candidate as done
+        return unpublished
+
+    return candidates
+
+
+def mark_topic_done(topic: str) -> None:
+    """Mark a topic as DONE in topics.txt (local runs only)."""
+    if os.getenv("GITHUB_ACTIONS"):
+        return
+    lines = TOPICS_FILE.read_text(encoding="utf-8").splitlines()
     for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and not stripped.startswith("DONE:"):
-            lines[i] = f"DONE: {stripped}"
+        if line.strip() == topic:
+            lines[i] = f"DONE: {topic}"
             TOPICS_FILE.write_text("\n".join(lines), encoding="utf-8")
-            return stripped
-
-    raise ValueError("No more topics in topics.txt — add some!")
+            return
 
 
 # ── Competitor Research ───────────────────────────────────────────────────────
@@ -196,9 +206,8 @@ def research_products(keyword: str) -> list[dict]:
         time.sleep(1)
 
     if len(products) < 3:
-        raise ValueError(
-            f"Product research for '{keyword}' found only {len(products)} result(s) — "
-            "not enough to write a useful article. Check search queries or skip this topic."
+        raise SkipTopicError(
+            f"Product research for '{keyword}' found only {len(products)} valid product(s) — skipping to next topic."
         )
 
     # Validate all ASINs are live before handing them to the writer
@@ -809,36 +818,33 @@ _QA_POISON = re.compile(
 
 
 def _assert_article_valid(article: str, topic: str) -> None:
-    """Abort the pipeline if the QA output looks like a critique instead of an article."""
+    """Skip this topic if the QA output looks like a critique instead of an article."""
     h3_count = len(re.findall(r'^### ', article, re.MULTILINE))
     if h3_count == 0:
-        raise ValueError(
-            f"QA output for '{topic}' has 0 H3 product sections — "
-            "looks like a critique was returned instead of an article. Aborting."
+        raise SkipTopicError(
+            f"QA output for '{topic}' has 0 H3 product sections — looks like a critique leaked through. Skipping to next topic."
         )
 
     match = _QA_POISON.search(article)
     if match:
-        raise ValueError(
-            f"QA output for '{topic}' contains suspicious text: '{match.group()}' — "
-            "looks like a refusal or editorial note leaked into the article. Aborting."
+        raise SkipTopicError(
+            f"QA output for '{topic}' contains suspicious text: '{match.group()}'. Skipping to next topic."
         )
 
     title_match = re.search(r"^#\s+(.+)$", article, re.MULTILINE)
     if title_match:
         title = title_match.group(1)
         if _QA_POISON.search(title):
-            raise ValueError(
-                f"QA output H1 title looks like a meta-heading: '{title}'. Aborting."
+            raise SkipTopicError(
+                f"QA output H1 title looks like a meta-heading: '{title}'. Skipping to next topic."
             )
 
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
-def run_pipeline(topic: str = None):
-    if not topic:
-        topic = get_next_topic()
-
+def _run_one(topic: str) -> str:
+    """Run the full pipeline for a single topic. Returns the live URL on success.
+    Raises SkipTopicError if the topic should be skipped."""
     slug = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:60]
     date_str = datetime.now().strftime("%Y-%m-%d")
 
@@ -915,6 +921,30 @@ def run_pipeline(topic: str = None):
     if qa_match:
         print(f"  QA note: {qa_match.group(1)}")
     print(f"{'='*60}\n")
+
+    mark_topic_done(topic)
+    return live_url
+
+
+def run_pipeline(topic: str = None):
+    """Try topics in order until one publishes successfully."""
+    if topic:
+        # Explicit topic: run once, let errors surface normally
+        _run_one(topic)
+        return
+
+    candidates = get_candidate_topics()
+    for candidate in candidates:
+        try:
+            _run_one(candidate)
+            return
+        except SkipTopicError as e:
+            print(f"\n  SKIP: {e}")
+            print(f"  Trying next topic...\n")
+
+    raise RuntimeError(
+        f"All {len(candidates)} candidate topic(s) failed — nothing published this run."
+    )
 
 
 if __name__ == "__main__":

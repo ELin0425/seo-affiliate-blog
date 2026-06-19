@@ -196,8 +196,10 @@ def research_products(keyword: str) -> list[dict]:
         time.sleep(1)
 
     if len(products) < 3:
-        print("  Falling back to curated product list")
-        products = _curated_products(seen_asins)
+        raise ValueError(
+            f"Product research for '{keyword}' found only {len(products)} result(s) — "
+            "not enough to write a useful article. Check search queries or skip this topic."
+        )
 
     # Validate all ASINs are live before handing them to the writer
     print("  Validating product links...")
@@ -246,26 +248,6 @@ def _clean_title(title: str) -> str:
     return title.strip()[:100]
 
 
-def _curated_products(exclude_asins: set) -> list[dict]:
-    """Curated fallback list — real products with verified ASINs."""
-    # ASINs verified working as of 2026-06-07 — validation step in research_products()
-    # will automatically skip any that go stale in future runs
-    items = [
-        ("Mueller Ultra-Stick 500W Immersion Blender", "B07Y7CSNL5"),
-        ("OXO Good Grips Large Salad Spinner", "B00004OCNS"),
-        ("Fullstar Vegetable Chopper Spiralizer", "B0764HS4SL"),
-        ("Lodge 10.25 Inch Cast Iron Skillet", "B00006JSUA"),
-    ]
-    return [
-        {
-            "name": name,
-            "asin": asin,
-            "url": f"https://www.amazon.com/dp/{asin}?tag={AFFILIATE_TAG}",
-            "snippet": "",
-        }
-        for name, asin in items
-        if asin not in exclude_asins
-    ]
 
 
 # ── Hero Image ───────────────────────────────────────────────────────────────
@@ -435,15 +417,12 @@ QA_SYSTEM = """\
 You are a sharp editor who reviews affiliate blog articles before they go live.
 Your job is to make sure the article sounds like it was written by a real person who actually cooks — not an AI.
 
-FIRST — NUMBER CONSISTENCY CHECK (do this before anything else):
-Count the H3 product sections in the article. Call this N.
-Then verify ALL of the following equal N:
-- The number in the H1 title (e.g. "The 5 Best...")
-- The number mentioned in the intro paragraphs (e.g. "I found five picks")
-- The number of items in the Quick Picks list
-- The number of data rows in the comparison table (not counting header or separator)
-If ANY of these differ from N, fix them all to match N before doing anything else.
-This is a hard requirement — do not submit a review where these numbers differ.
+Before editing, silently count the H3 product sections (call this N) and fix any number mismatches:
+- The digit in the H1 title must equal N
+- Any number word/digit in the intro paragraphs must equal N
+- The Quick Picks list must have exactly N items
+- The comparison table must have exactly N data rows (excluding header and separator)
+Fix these silently — do not write any notes, headings, or commentary about the check.
 
 READ THE ARTICLE AS A SKEPTICAL HUMAN. Fix these specific issues wherever you find them:
 
@@ -820,6 +799,40 @@ def fix_broken_links(article: str) -> str:
     return article
 
 
+# ── Pre-publish Validation ────────────────────────────────────────────────────
+
+_QA_POISON = re.compile(
+    r"(?:NUMBER CONSISTENCY CHECK|PLACEHOLDER|DO NOT PUBLISH|flagging this for|"
+    r"cannot publish|I cannot|I'm flagging|cannot submit|needs to be replaced)",
+    re.IGNORECASE,
+)
+
+
+def _assert_article_valid(article: str, topic: str) -> None:
+    """Abort the pipeline if the QA output looks like a critique instead of an article."""
+    h3_count = len(re.findall(r'^### ', article, re.MULTILINE))
+    if h3_count == 0:
+        raise ValueError(
+            f"QA output for '{topic}' has 0 H3 product sections — "
+            "looks like a critique was returned instead of an article. Aborting."
+        )
+
+    match = _QA_POISON.search(article)
+    if match:
+        raise ValueError(
+            f"QA output for '{topic}' contains suspicious text: '{match.group()}' — "
+            "looks like a refusal or editorial note leaked into the article. Aborting."
+        )
+
+    title_match = re.search(r"^#\s+(.+)$", article, re.MULTILINE)
+    if title_match:
+        title = title_match.group(1)
+        if _QA_POISON.search(title):
+            raise ValueError(
+                f"QA output H1 title looks like a meta-heading: '{title}'. Aborting."
+            )
+
+
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 def run_pipeline(topic: str = None):
@@ -847,6 +860,7 @@ def run_pipeline(topic: str = None):
 
     print("Step 4/6 — QA review...")
     final = qa_review(draft, topic)
+    _assert_article_valid(final, topic)
     final = _fix_article_formatting(final, len(products))
 
     print("Step 5/6 — Validating affiliate links...")

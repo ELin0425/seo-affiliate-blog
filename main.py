@@ -372,7 +372,7 @@ ARTICLE STRUCTURE (follow this exactly):
 SEO RULES:
 - Target keyword appears in H1, first 100 words, and at least 2 H2 headings
 - Use natural keyword variations — don't repeat the exact phrase more than 3 times
-- Aim for 1100–1400 words total (the comparison table and pros/cons add length)
+- Aim for 1300–1600 words total (the comparison table and pros/cons add length)
 - At the very end, add: <!-- META: your 150-char meta description here -->
 
 STYLE RULES:
@@ -555,7 +555,7 @@ def qa_review(draft: str, topic: str) -> str:
 
     response = client.messages.create(
         model=MODEL,
-        max_tokens=4000,
+        max_tokens=6000,
         system=QA_SYSTEM,
         messages=[{
             "role": "user",

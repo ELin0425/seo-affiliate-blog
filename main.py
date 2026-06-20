@@ -688,7 +688,7 @@ def publish_to_blog(topic: str, article: str, hero_path: Path | None = None, her
     posts_dir = BLOG_REPO / "_posts"
     posts_dir.mkdir(parents=True, exist_ok=True)
 
-    image_url = f"/kitchen-finds/assets/images/posts/{hero_path.name}" if (hero_path and hero_path.exists()) else None
+    image_url = f"/assets/images/posts/{hero_path.name}" if (hero_path and hero_path.exists()) else None
     frontmatter, slug, date_str = _make_frontmatter(topic, article, layout="post", image_url=image_url, faq=faq)
     clean_article = _clean_for_publish(article)
 

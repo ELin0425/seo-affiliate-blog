@@ -377,6 +377,9 @@ SEO RULES:
 
 STYLE RULES:
 - Never use em dashes (—). Use a comma, colon, or rewrite the sentence instead.
+- NEVER add a 'Related Articles', 'Related Posts', or 'You May Also Like' section — that is injected automatically.
+- NEVER link product names to Amazon inline within paragraph text. Product names in paragraphs must be plain text. An Amazon link in the middle of a sentence renders as an orange button and breaks the layout. The ONLY Amazon affiliate links in your article are the dedicated `[→ Check price on Amazon](URL)` lines at the end of each product H3 section.
+- NEVER add links to kitchen-finds.com URLs — internal linking is handled by the pipeline.
 
 Output clean markdown only. No preamble.\
 """
@@ -598,8 +601,9 @@ def _extract_faq(article: str) -> list[dict]:
 
 def _inject_related_posts(article: str, current_slug: str) -> str:
     """Append a 'Related Articles' section linking to other posts on the site."""
-    if "## Related Articles" in article:
-        return article
+    # Strip any AI-generated Related Articles section (Claude sometimes adds one with wrong URLs)
+    article = re.sub(r'\n---\n\n## Related Articles\n[\s\S]+$', '', article).rstrip()
+    article = re.sub(r'\n\n## Related Articles\n[\s\S]+$', '', article).rstrip()
 
     posts_dir = BLOG_REPO / "_posts"
     if not posts_dir.exists():
@@ -671,6 +675,13 @@ def _clean_for_publish(article: str) -> str:
     # Hard remove any em dashes that slipped through the prompts
     article = article.replace(" — ", ", ")  # spaced em dash -> comma
     article = article.replace("—", ", ")      # unspaced em dash -> comma
+    # Mark inline Amazon links with data-inline so they don't get orange button CSS.
+    # "Check price on Amazon" CTA links are left as-is (they should be buttons).
+    article = re.sub(
+        r'\[(?!→ Check price on Amazon\])([^\]]+)\]\((https://www\.amazon\.com/[^)]+)\)',
+        r'<a href="\2" data-inline>\1</a>',
+        article,
+    )
     return article.strip()
 
 

@@ -636,8 +636,13 @@ def _make_frontmatter(topic: str, article: str, layout: str = "post", image_url:
     slug = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:60]
     date_str = datetime.now().strftime("%Y-%m-%d")
 
+    fallback_desc = f"The best {topic} — tested picks with real Amazon affiliate links."
     meta_match = re.search(r"<!--\s*META:\s*(.+?)\s*-->", article)
-    meta_desc = meta_match.group(1) if meta_match else f"The best {topic} — tested picks with real Amazon affiliate links."
+    meta_desc = meta_match.group(1) if meta_match else fallback_desc
+    # Guard against the LLM emitting leftover image markdown/caption text as the description
+    # (happened once: "!best kitchen gadgets under $50 Photo by KROK Craft on Unsplash")
+    if meta_desc.startswith("!") or "Photo by" in meta_desc or len(meta_desc) < 40:
+        meta_desc = fallback_desc
 
     title_match = re.search(r"^#\s+(.+)$", article, re.MULTILINE)
     title = title_match.group(1).strip() if title_match else topic

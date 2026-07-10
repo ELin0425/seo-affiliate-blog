@@ -8,9 +8,9 @@ DONE: best immersion blenders under $50
 DONE: best air fryers under $50
 DONE: best coffee gadgets and accessories under $50
 DONE: best kitchen tools for beginners under $50
-best meal prep gadgets under $50
-best kitchen gadgets for college students
-best mini appliances for dorm rooms
+DONE: best meal prep gadgets under $50
+DONE: best kitchen gadgets for college students
+DONE: best mini appliances for dorm rooms
 DONE: best knife sharpeners under $50
 best kitchen gifts under $50 for home cooks
 best breakfast gadgets under $50
@@ -23,3 +23,25 @@ how to keep herbs fresh for two weeks or longer
 how to clean a blender without taking it apart
 how to choose the right cutting board for your kitchen
 what to look for when buying a kitchen knife under $50
+
+# Refilled 2026-07-10 from GSC Performance CSV (kitchen-finds.com, last 3 months).
+# First 3 are direct query gaps: real impressions for these terms are landing on
+# existing posts that don't actually cover the product (e.g. "dorm microwave"
+# queries hitting the dorm-appliances roundup, which has no microwave in it).
+# The rest use the site's best-performing pattern for a low-authority domain:
+# "best [gadget] for [specific person/situation] under $X" over generic titles.
+best microwave for a dorm room under $50
+best personal blender for a dorm room under $50
+best coffee makers under $50
+best electric kettle for a small apartment under $50
+best toaster oven for a studio apartment under $50
+best rice cooker for one or two people under $50
+best food processor for weeknight cooking under $50
+best hand mixer for small kitchens under $50
+best waffle maker for a lazy Sunday under $50
+best kitchen scale for portion control under $50
+best mandoline slicer for meal prep under $50
+best salad spinner for small kitchens under $50
+best meat thermometer for home cooks under $50
+best garlic press that actually works under $20
+best water filter pitcher for renters under $50

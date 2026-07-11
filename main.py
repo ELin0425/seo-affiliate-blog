@@ -579,8 +579,10 @@ def _yaml_str(s: str) -> str:
 
 
 def _extract_faq(article: str) -> list[dict]:
-    """Extract FAQ Q&A pairs for JSON-LD schema markup."""
-    faq_match = re.search(r"## Frequently Asked Questions\s*\n([\s\S]+?)(?:\n---|\n## |\Z)", article)
+    """Extract FAQ Q&A pairs for JSON-LD schema markup. Matches FAQ heading
+    variants ('## FAQ', '## FAQ About X', '## FAQ: ...', '## Frequently Asked
+    Questions') since not every draft uses the exact heading text."""
+    faq_match = re.search(r"^## (?:FAQ|Frequently Asked).*\n([\s\S]+?)(?:\n---|\n## |\Z)", article, re.MULTILINE)
     if not faq_match:
         return []
 
@@ -597,6 +599,27 @@ def _extract_faq(article: str) -> list[dict]:
             pairs.append({"q": q, "a": a})
         i += 2
     return pairs
+
+
+def _extract_product_list(article: str) -> list[dict]:
+    """
+    Pull one {name, url} entry per H3 product section that has a resolved Amazon
+    affiliate link, for the ItemList JSON-LD frontmatter the kitchen-finds site
+    renders (products: list). ItemList only -- no star-rating/Review schema, since
+    fake ratings risk a Google manual action. Returns [] for guide-mode posts
+    (no H3 product sections).
+    """
+    parts = re.split(r'^(### .+)$', article, flags=re.MULTILINE)
+    products: list[dict] = []
+    i = 1
+    while i < len(parts) - 1:
+        heading = parts[i].lstrip("#").strip()
+        body = parts[i + 1]
+        link_match = re.search(r'\[→ Check price on Amazon\]\((https://www\.amazon\.com/[^)]+)\)', body)
+        if link_match:
+            products.append({"name": heading, "url": link_match.group(1)})
+        i += 2
+    return products
 
 
 def _inject_related_posts(article: str, current_slug: str) -> str:
@@ -631,7 +654,7 @@ def _inject_related_posts(article: str, current_slug: str) -> str:
     return article + f"\n\n---\n\n## Related Articles\n\n{links}\n"
 
 
-def _make_frontmatter(topic: str, article: str, layout: str = "post", image_url: str = None, faq: list = None) -> tuple[str, str, str]:
+def _make_frontmatter(topic: str, article: str, layout: str = "post", image_url: str = None, faq: list = None, products: list = None) -> tuple[str, str, str]:
     """Return (frontmatter, slug, date_str) for an article."""
     slug = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:60]
     date_str = datetime.now().strftime("%Y-%m-%d")
@@ -657,6 +680,16 @@ def _make_frontmatter(topic: str, article: str, layout: str = "post", image_url:
             lines.append(f"    a: {_yaml_str(item['a'])}")
         faq_yaml = "\n".join(lines) + "\n"
 
+    products_yaml = ""
+    if products:
+        # ItemList JSON-LD (kitchen-finds head-custom.html) reads this list -- name +
+        # affiliate url per product. No star ratings/Review schema here.
+        lines = ["products:"]
+        for p in products:
+            lines.append(f"  - name: {_yaml_str(p['name'])}")
+            lines.append(f"    url: {_yaml_str(p['url'])}")
+        products_yaml = "\n".join(lines) + "\n"
+
     frontmatter = (
         f"---\n"
         f"layout: {layout}\n"
@@ -666,6 +699,7 @@ def _make_frontmatter(topic: str, article: str, layout: str = "post", image_url:
         f"categories: [kitchen, gadgets]\n"
         f"{image_line}"
         f"{faq_yaml}"
+        f"{products_yaml}"
         f"---\n\n"
     )
     return frontmatter, slug, date_str
@@ -690,22 +724,22 @@ def _clean_for_publish(article: str) -> str:
     return article.strip()
 
 
-def save_article(topic: str, article: str, faq: list = None) -> Path:
+def save_article(topic: str, article: str, faq: list = None, products: list = None) -> Path:
     """Save a local review copy to articles/."""
     OUTPUT_DIR.mkdir(exist_ok=True)
-    frontmatter, slug, date_str = _make_frontmatter(topic, article, faq=faq)
+    frontmatter, slug, date_str = _make_frontmatter(topic, article, faq=faq, products=products)
     filepath = OUTPUT_DIR / f"{date_str}-{slug}.md"
     filepath.write_text(frontmatter + article, encoding="utf-8")
     return filepath
 
 
-def publish_to_blog(topic: str, article: str, hero_path: Path | None = None, hero_credit: str | None = None, faq: list = None) -> str:
+def publish_to_blog(topic: str, article: str, hero_path: Path | None = None, hero_credit: str | None = None, faq: list = None, products: list = None) -> str:
     """Copy article to the blog repo and push to GitHub Pages."""
     posts_dir = BLOG_REPO / "_posts"
     posts_dir.mkdir(parents=True, exist_ok=True)
 
     image_url = f"/assets/images/posts/{hero_path.name}" if (hero_path and hero_path.exists()) else None
-    frontmatter, slug, date_str = _make_frontmatter(topic, article, layout="post", image_url=image_url, faq=faq)
+    frontmatter, slug, date_str = _make_frontmatter(topic, article, layout="post", image_url=image_url, faq=faq, products=products)
     clean_article = _clean_for_publish(article)
 
     hero_block = ""
@@ -1034,11 +1068,16 @@ def _run_one(topic: str) -> str:
     else:
         print("  No FAQ section found — schema skipped")
 
+    # ItemList schema (name + affiliate url per H3 product section). [] for guide-mode posts.
+    product_list = _extract_product_list(final) if not guide_mode else []
+    if product_list:
+        print(f"  {len(product_list)} product(s) extracted for ItemList schema")
+
     print("Step 6/6 — Hero image...")
     hero_path, hero_credit = fetch_hero_image(topic, slug, date_str)
 
-    local_path = save_article(topic, final, faq=faq_data)
-    live_url = publish_to_blog(topic, final, hero_path=hero_path, hero_credit=hero_credit, faq=faq_data)
+    local_path = save_article(topic, final, faq=faq_data, products=product_list)
+    live_url = publish_to_blog(topic, final, hero_path=hero_path, hero_credit=hero_credit, faq=faq_data, products=product_list)
 
     word_count = len(re.sub(r"---.*?---", "", final, flags=re.DOTALL).split())
     qa_match = re.search(r"<!--\s*QA:\s*(.+?)\s*-->", final)

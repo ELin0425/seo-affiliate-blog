@@ -40,7 +40,7 @@ load_dotenv()
 AFFILIATE_TAG = "merrieri0a-20"
 OUTPUT_DIR = Path("articles")
 TOPICS_FILE = Path("topics.txt")
-MODEL = "claude-sonnet-4-6"
+MODEL = "claude-sonnet-5"  # $2/$10 intro through 2026-08-31, then $3/$15 (same as 4.6)
 BLOG_REPO = Path(os.getenv("BLOG_REPO_PATH", r"C:\Users\linse\projects\passive-income\kitchen-finds"))
 
 client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])

@@ -45,6 +45,14 @@ BLOG_REPO = Path(os.getenv("BLOG_REPO_PATH", r"C:\Users\linse\projects\passive-i
 
 client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
+
+def _text(response) -> str:
+    """Pull the text out of a Messages response, skipping any thinking blocks."""
+    for block in response.content:
+        if block.type == "text":
+            return block.text
+    raise ValueError(f"No text block in response content: {response.content!r}")
+
 # ── Topic Management ──────────────────────────────────────────────────────────
 
 class SkipTopicError(Exception):
@@ -324,7 +332,7 @@ def _qa_image(img_data: bytes, topic: str) -> bool:
                 ],
             }],
         )
-        return "PASS" in response.content[0].text.upper()
+        return "PASS" in _text(response).upper()
     except Exception:
         return False
 
@@ -467,7 +475,7 @@ Write the full article now."""
         system=WRITER_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
     )
-    return response.content[0].text
+    return _text(response)
 
 
 def write_guide(topic: str, competitor_data: list) -> str:
@@ -514,7 +522,7 @@ Write the full guide now."""
         system=GUIDE_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
     )
-    return response.content[0].text
+    return _text(response)
 
 
 # ── QA Reviewer ───────────────────────────────────────────────────────────────
@@ -565,7 +573,7 @@ def qa_review(draft: str, topic: str) -> str:
             "content": f"Review and improve this article. Topic: {topic}\n\n---\n\n{draft}",
         }],
     )
-    return response.content[0].text
+    return _text(response)
 
 
 # ── Save & Publish ────────────────────────────────────────────────────────────

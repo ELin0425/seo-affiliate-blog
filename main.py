@@ -973,6 +973,23 @@ _QA_POISON = re.compile(
 )
 
 
+def _is_guide_truncated(final: str, draft: str) -> bool:
+    """Heuristic check that the QA rewrite of a guide didn't get cut off mid-generation.
+
+    QA_SYSTEM requires a trailing <!-- QA: ... --> comment and a full rewrite; a response
+    that stops mid-sentence (as happened on the 2026-07-20 kitchen-organizing post) is
+    missing that comment and/or lands well short of the draft it was supposed to revise.
+    """
+    if not re.search(r"<!--\s*QA:", final):
+        return True
+    body = re.sub(r"<!--\s*QA:.*?-->", "", final).rstrip()
+    if not re.search(r'[.!?"\')]\s*$', body):
+        return True
+    if len(final.split()) < len(draft.split()) * 0.7:
+        return True
+    return False
+
+
 def _assert_article_valid(article: str, topic: str) -> None:
     """Skip this topic if the QA output looks like a critique instead of an article."""
     h3_count = len(re.findall(r'^### ', article, re.MULTILINE))
@@ -1026,6 +1043,12 @@ def _run_one(topic: str) -> str:
 
         print("Step 4/6 — QA review...")
         final = qa_review(draft, topic)
+        if _is_guide_truncated(final, draft):
+            print("  QA output looks truncated — retrying once...")
+            final = qa_review(draft, topic)
+            if _is_guide_truncated(final, draft):
+                print("  QA rewrite still truncated — publishing original draft instead")
+                final = draft
 
         print("Step 5/6 — Skipping affiliate link validation (informational post)\n")
 

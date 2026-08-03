@@ -14,12 +14,16 @@ Usage:
 
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
+
+import pinterest_auth
+from pins import fetch_product_price
 
 load_dotenv()
 
@@ -30,14 +34,11 @@ PINTEREST_API = "https://api.pinterest.com/v5"
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 def get_token() -> str:
-    token = os.getenv("PINTEREST_ACCESS_TOKEN")
-    if not token:
-        print("Error: PINTEREST_ACCESS_TOKEN not set in .env")
-        print("  1. Go to developers.pinterest.com → your app → Configure")
-        print("  2. Generate an access token with boards:read and pins:write scopes")
-        print("  3. Add PINTEREST_ACCESS_TOKEN=your_token to .env")
+    try:
+        return pinterest_auth.get_valid_token()
+    except RuntimeError as e:
+        print(f"Error: {e}")
         sys.exit(1)
-    return token
 
 
 # ── Board lookup ──────────────────────────────────────────────────────────────
@@ -93,14 +94,34 @@ def upload_image(token: str, image_path: str) -> str:
 
 # ── Post a single pin ─────────────────────────────────────────────────────────
 
-def post_pin(token: str, board_id: str, pin: dict, dry_run: bool = False) -> bool:
-    """Post one pin to Pinterest. Returns True on success."""
+def post_pin(token: str, board_id: str, pin: dict, dry_run: bool = False) -> str:
+    """Post one pin to Pinterest. Returns 'posted', 'skipped_price', or 'failed'."""
     import base64
 
     if dry_run:
         print(f"  [DRY RUN] Would post: {pin['title'][:60]}")
         print(f"    Type: {pin['type']} | Link: {pin['link'][:60]}")
-        return True
+        return "posted"
+
+    # Final live price re-check right before posting -- pins can sit in the
+    # queue for days/weeks, and prices drift in that window (this is exactly
+    # how a false "Under $50" claim went live on 2026-07-23).
+    if pin["type"] == "product":
+        ceiling_match = re.search(r"Under \$(\d+)", pin["title"])
+        asin_match = re.search(r"amazon\.com/dp/([A-Z0-9]{10})", pin["link"])
+        if ceiling_match and asin_match:
+            ceiling = int(ceiling_match.group(1))
+            price = fetch_product_price(asin_match.group(1))
+            if price is None:
+                time.sleep(5)  # one retry in case of a transient rate-limit
+                price = fetch_product_price(asin_match.group(1))
+
+            if price is not None and price > ceiling:
+                print(f"  SKIPPED (price now ${price:.2f}, over ${ceiling}): {pin['title'][:55]}")
+                return "skipped_price"
+            if price is None:
+                print(f"  Could not verify current price after retry, not risking a false claim: {pin['title'][:50]}")
+                return "failed"  # stays in queue, retry next run rather than permanently skipping
 
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
@@ -110,7 +131,7 @@ def post_pin(token: str, board_id: str, pin: dict, dry_run: bool = False) -> boo
             image_b64 = base64.b64encode(f.read()).decode()
     except FileNotFoundError:
         print(f"  Image not found: {pin['image_path']} — run pins.py first")
-        return False
+        return "failed"
 
     payload = {
         "board_id": board_id,
@@ -129,10 +150,10 @@ def post_pin(token: str, board_id: str, pin: dict, dry_run: bool = False) -> boo
     if resp.status_code == 201:
         pin_id = resp.json().get("id", "?")
         print(f"  Posted: {pin['title'][:55]} (ID: {pin_id})")
-        return True
+        return "posted"
     else:
         print(f"  Failed ({resp.status_code}): {resp.text[:120]}")
-        return False
+        return "failed"
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -143,7 +164,7 @@ def run(post_all: bool = False, dry_run: bool = False):
         return
 
     queue = json.loads(QUEUE_FILE.read_text(encoding="utf-8"))
-    unposted = [p for p in queue if not p["posted"]]
+    unposted = [p for p in queue if not p["posted"] and not p.get("skipped_price")]
 
     if not unposted:
         print("All pins already posted. Run pins.py to generate more.")
@@ -166,13 +187,13 @@ def run(post_all: bool = False, dry_run: bool = False):
         if product_pins:
             ordered.append(product_pins.pop(0))
 
-    # Limit to 1 per run unless --all
-    to_post = ordered if post_all else ordered[:1]
-
-    for pin in to_post:
-        success = post_pin(token, board_id, pin, dry_run=dry_run)
-        if success and not dry_run:
-            pin["posted"] = True
+    for pin in ordered:
+        result = post_pin(token, board_id, pin, dry_run=dry_run)
+        if not dry_run:
+            if result == "posted":
+                pin["posted"] = True
+            elif result == "skipped_price":
+                pin["skipped_price"] = True
 
         if not post_all and not dry_run:
             # Save progress after each pin
@@ -180,10 +201,19 @@ def run(post_all: bool = False, dry_run: bool = False):
 
         time.sleep(2)  # be gentle with the API
 
+        # One successful post per run is the daily quota -- a failed/skipped pin
+        # (e.g. discontinued product) should not block the whole run, so keep
+        # trying the next pin in queue order instead of stopping after pin #1.
+        if result == "posted" and not post_all:
+            break
+
     if not dry_run:
         QUEUE_FILE.write_text(json.dumps(queue, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    remaining = sum(1 for p in queue if not p["posted"])
+    remaining = sum(1 for p in queue if not p["posted"] and not p.get("skipped_price"))
+    skipped = sum(1 for p in queue if p.get("skipped_price"))
+    if skipped:
+        print(f"  {skipped} pins permanently skipped (over their claimed price ceiling)")
     print(f"\n  {remaining} pins still in queue")
     if remaining and not post_all:
         print("  Run again tomorrow or use --all to post everything")

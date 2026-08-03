@@ -15,14 +15,34 @@ Usage:
 import json
 import os
 import re
+import subprocess
 import sys
 import textwrap
+import time
 from io import BytesIO
 from pathlib import Path
 
-import requests
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
+
+# Amazon serves a ~4KB bot-check stub to Python's requests/urllib (even with a
+# browser User-Agent) but serves the real page to curl. Shelling out to curl
+# is the only reliable way found so far to actually fetch product pages/images.
+CURL_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+
+
+def curl_get(url: str, timeout: int = 15) -> bytes | None:
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "-L", "--compressed", "-A", CURL_UA, "--max-time", str(timeout), url],
+            capture_output=True,
+            timeout=timeout + 5,
+        )
+        if result.returncode != 0 or not result.stdout:
+            return None
+        return result.stdout
+    except Exception:
+        return None
 
 load_dotenv()
 
@@ -32,7 +52,7 @@ BLOG_REPO   = Path(os.getenv("BLOG_REPO_PATH", r"C:\Users\linse\projects\passive
 PINS_DIR    = Path("pins")
 IMAGES_DIR  = PINS_DIR / "images"
 QUEUE_FILE  = PINS_DIR / "queue.json"
-BLOG_BASE   = "https://elin0425.github.io/kitchen-finds"
+BLOG_BASE   = "https://kitchen-finds.com"
 AFFILIATE_TAG = "merrieri0a-20"
 
 PIN_W, PIN_H = 1000, 1500
@@ -68,24 +88,52 @@ def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
 
 def fetch_product_image(asin: str) -> Image.Image | None:
     """Fetch the main product image from Amazon. Returns None on failure."""
+    html_bytes = curl_get(f"https://www.amazon.com/dp/{asin}")
+    if not html_bytes:
+        return None
+    html = html_bytes.decode("utf-8", errors="ignore")
+
+    # Amazon embeds the hi-res image URL in the page's JSON data
+    match = re.search(r'"large"\s*:\s*"(https://m\.media-amazon\.com/images/I/[^"]+)"', html)
+    if not match:
+        # fallback: og:image tag
+        match = re.search(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', html)
+    if not match:
+        return None
+
+    img_bytes = curl_get(match.group(1))
+    if not img_bytes:
+        return None
     try:
-        resp = requests.get(
-            f"https://www.amazon.com/dp/{asin}",
-            timeout=12,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
-        )
-        # Amazon embeds the hi-res image URL in the page's JSON data
-        match = re.search(r'"large"\s*:\s*"(https://m\.media-amazon\.com/images/I/[^"]+)"', resp.text)
-        if not match:
-            # fallback: og:image tag
-            match = re.search(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', resp.text)
-        if match:
-            img_url = match.group(1)
-            img_resp = requests.get(img_url, timeout=10)
-            return Image.open(BytesIO(img_resp.content)).convert("RGB")
+        return Image.open(BytesIO(img_bytes)).convert("RGB")
     except Exception:
-        pass
-    return None
+        return None
+
+
+def _extract_blurb(content: str, heading_pos: int, link_pos: int, max_len: int = 200) -> str | None:
+    """Pull the review paragraph between a product's H3 heading and its 'Check price' link."""
+    heading_end = content.find("\n", heading_pos)
+    if heading_end == -1:
+        return None
+    paragraph = content[heading_end:link_pos].strip().split("\n\n")[0].strip()
+    paragraph = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", paragraph)  # markdown links -> visible text
+    paragraph = re.sub(r"[*_`]", "", paragraph)  # strip bold/italic/code markers
+    if not paragraph:
+        return None
+    if len(paragraph) <= max_len:
+        return paragraph
+    truncated = paragraph[:max_len].rsplit(" ", 1)[0]
+    return truncated + "..."
+
+
+def fetch_product_price(asin: str) -> float | None:
+    """Fetch the current live price from Amazon. Returns None on failure."""
+    html_bytes = curl_get(f"https://www.amazon.com/dp/{asin}")
+    if not html_bytes:
+        return None
+    html = html_bytes.decode("utf-8", errors="ignore")
+    match = re.search(r'"priceAmount":([0-9.]+)', html)
+    return float(match.group(1)) if match else None
 
 
 def _placeholder_image(product_name: str) -> Image.Image:
@@ -171,7 +219,7 @@ def make_article_pin(article_title: str, product_image: Image.Image | None) -> I
     return img
 
 
-def make_product_pin(product_name: str, affiliate_url: str, product_image: Image.Image | None) -> Image.Image:
+def make_product_pin(product_name: str, affiliate_url: str, product_image: Image.Image | None, price_ceiling: int = 50) -> Image.Image:
     """
     Product pin — individual product spotlight, links directly to Amazon.
     Top: large product image. Bottom: dark panel with name, badge, CTA.
@@ -203,8 +251,8 @@ def make_product_pin(product_name: str, affiliate_url: str, product_image: Image
         draw.text((40, y), line, fill="white", font=font_name)
         y += 62
 
-    # "Under $50" badge
-    badge_text = "Under $50"
+    # Price ceiling badge (matches the article's actual claimed price cap)
+    badge_text = f"Under ${price_ceiling}"
     badge_w = int(draw.textlength(badge_text, font=font_badge)) + 30
     draw.rounded_rectangle([40, y + 16, 40 + badge_w, y + 72], radius=8, fill="#e63946")
     draw.text((55, y + 20), badge_text, fill="white", font=font_badge)
@@ -254,7 +302,9 @@ def parse_posts() -> list[dict]:
         ]
 
         # Extract product ASINs + affiliate URLs, matching each to the nearest H3 above it
+        # (seo-affiliate-blog's own "[→ Check price on Amazon](url)" CTA-line style)
         products = []
+        seen_asins = set()
         for link_match in re.finditer(
             r"\[.*?Check.*?Amazon.*?\]\((https://www\.amazon\.com/dp/([A-Z0-9]{10})[^)]*)\)",
             content, re.IGNORECASE,
@@ -265,20 +315,53 @@ def parse_posts() -> list[dict]:
 
             # Find the last H3 that appears before this link
             name = f"Product {asin}"
+            heading_pos = None
             for h3_pos, h3_text in h3_positions:
                 if h3_pos < pos:
                     name = h3_text
+                    heading_pos = h3_pos
                 else:
                     break
 
-            if not any(p["asin"] == asin for p in products):
-                products.append({"name": name, "asin": asin, "url": affiliate_url})
+            if asin not in seen_asins:
+                blurb = _extract_blurb(content, heading_pos, pos) if heading_pos is not None else None
+                products.append({"name": name, "asin": asin, "url": affiliate_url, "blurb": blurb})
+                seen_asins.add(asin)
+
+        # growth-pipeline's inline style: <a href="..." data-inline>short anchor text</a>
+        # Anchor text is already a short, clean product name -- no H3-matching needed.
+        # Search-fallback links (amazon.com/s?k=...) have no ASIN, so there's no way
+        # to verify price or fetch a real photo -- skip those for per-product pins,
+        # but they still count toward the post having "products" for the article pin.
+        has_inline_products = False
+        for link_match in re.finditer(
+            r'<a href="(https://www\.amazon\.com/[^"]+)"[^>]*\bdata-inline\b[^>]*>([^<]+)</a>',
+            content,
+        ):
+            affiliate_url = link_match.group(1)
+            name = link_match.group(2).strip()
+            has_inline_products = True
+
+            asin_match = re.search(r"/dp/([A-Z0-9]{10})", affiliate_url)
+            if not asin_match:
+                continue  # search-link fallback, no verifiable product
+
+            asin = asin_match.group(1)
+            if asin not in seen_asins:
+                products.append({"name": name, "asin": asin, "url": affiliate_url, "blurb": None})
+                seen_asins.add(asin)
 
         image_match = re.search(r'^image:\s*"(.+?)"', content, re.MULTILINE)
         image_url = image_match.group(1) if image_match else None
 
-        if products:
-            posts.append({"title": title, "url": url, "slug": stem, "products": products, "image_url": image_url})
+        ceiling_match = re.search(r'[Uu]nder \$(\d+)', title)
+        price_ceiling = int(ceiling_match.group(1)) if ceiling_match else None
+
+        if products or has_inline_products:
+            posts.append({
+                "title": title, "url": url, "slug": stem, "products": products,
+                "image_url": image_url, "price_ceiling": price_ceiling,
+            })
 
     return posts
 
@@ -312,7 +395,7 @@ def generate_pins():
         print(f"\nPost: {post['title']}")
 
         # Use the blog's saved hero image first, fall back to Amazon scrape
-        first_product = post["products"][0]
+        first_product = post["products"][0] if post["products"] else None
         article_img = None
         if post.get("image_url"):
             img_filename = post["image_url"].split("/")[-1]
@@ -320,10 +403,15 @@ def generate_pins():
             if img_local.exists():
                 article_img = Image.open(str(img_local)).convert("RGB")
                 print(f"  Using hero image: {img_filename}")
-        if not article_img:
+        if not article_img and first_product:
             print(f"  Fetching image for {first_product['name']} from Amazon...")
             article_img = fetch_product_image(first_product["asin"])
             print("  Got image from Amazon" if article_img else "  Using placeholder")
+        elif not article_img:
+            article_img = _placeholder_image(post["title"])
+            print("  No hero image and no verifiable product to fetch from -- using placeholder")
+
+        ceiling = post["price_ceiling"] or 50
 
         # ── Article pin (one per post) ──
         article_key = f"article_{post['slug']}"
@@ -336,7 +424,7 @@ def generate_pins():
                 "key": article_key,
                 "type": "article",
                 "title": post["title"],
-                "description": f"Tested picks for apartment cooks and home chefs — all under $50 on Amazon. {post['title']}",
+                "description": f"Tested picks for apartment cooks and home chefs, all under ${ceiling} on Amazon. {post['title']}",
                 "link": post["url"],
                 "image_path": str(img_path),
                 "posted": False,
@@ -350,19 +438,34 @@ def generate_pins():
             if product_key in queued_keys:
                 continue
 
+            print(f"  Checking live price for {product['name'][:40]}...")
+            price = fetch_product_price(product["asin"])
+            if price is None:
+                time.sleep(5)  # one retry in case of a transient rate-limit
+                price = fetch_product_price(product["asin"])
+
+            if price is not None and price > ceiling:
+                print(f"  SKIPPED: now ${price:.2f}, over the ${ceiling} claimed in \"{post['title']}\"")
+                continue
+            if price is None:
+                print(f"  SKIPPED: could not verify current price after retry -- not risking a false claim")
+                continue
+
             print(f"  Generating product pin for {product['name'][:40]}...")
             prod_img = fetch_product_image(product["asin"]) if product["asin"] != first_product["asin"] else article_img
-            pin = make_product_pin(product["name"], product["url"], prod_img)
+            pin = make_product_pin(product["name"], product["url"], prod_img, price_ceiling=ceiling)
             img_path = IMAGES_DIR / f"{product_key}.png"
             pin.save(str(img_path), "PNG")
             queue.append({
                 "key": product_key,
                 "type": "product",
-                "title": f"{product['name']} — Under $50 on Amazon",
-                "description": f"One of the best kitchen gadgets under $50. Check price on Amazon — {product['name']}.",
+                "title": f"{product['name']} - Under ${ceiling} on Amazon",
+                "description": product["blurb"] + f" Under ${ceiling} on Amazon." if product.get("blurb")
+                    else f"One of the best kitchen gadgets under ${ceiling}. Check price on Amazon - {product['name']}.",
                 "link": product["url"],
                 "image_path": str(img_path),
                 "posted": False,
+                "price_checked_at": price,
             })
             queued_keys.add(product_key)
             new_pins += 1

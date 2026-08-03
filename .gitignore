@@ -1,4 +1,7 @@
 .env
+pinterest_token.json
 __pycache__/
 *.pyc
 articles/
+pins/
+pins_run_log.txt

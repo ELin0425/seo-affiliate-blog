@@ -273,19 +273,46 @@ def fetch_hero_image(topic: str, slug: str, date_str: str) -> tuple[Path | None,
         print("  No UNSPLASH_ACCESS_KEY in .env — skipping hero image")
         return None, None
 
-    search_query = re.sub(r"\bunder\s*\$\d+\b|\bbest\b", "", topic, flags=re.IGNORECASE).strip()
-    search_query = f"kitchen {search_query} food"
+    # Strip price/superlative noise and filler phrases, then keep only the core
+    # product keywords. Unsplash AND-matches the whole phrase, so a long literal
+    # query like "kitchen personal blender for a dorm room food" matches nothing.
+    cleaned = re.sub(r"\bunder\s*\$\d+\b|\bbest\b", "", topic, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"\b(for|a|an|the|to|your|and|in|on|of|with|dorm|room|beginners?|"
+        r"students?|college|home|small|apartment|apartments)\b",
+        "", cleaned, flags=re.IGNORECASE,
+    )
+    keywords = [w for w in re.split(r"[^a-z0-9]+", cleaned.lower()) if w and w != "kitchen"]
 
-    try:
-        resp = requests.get(
-            "https://api.unsplash.com/search/photos",
-            params={"query": search_query, "per_page": 5, "orientation": "landscape"},
-            headers={"Authorization": f"Client-ID {key}"},
-            timeout=10,
-        )
-        results = resp.json().get("results", [])
-    except Exception as e:
-        print(f"  Unsplash search failed: {e}")
+    # Progressively broader queries; use the first that returns any photos.
+    queries = []
+    if keywords:
+        queries.append("kitchen " + " ".join(keywords[:3]))
+        queries.append("kitchen " + " ".join(keywords[-2:]))
+        queries.append(keywords[-1])
+    queries.append("kitchen food")
+    queries = list(dict.fromkeys(queries))  # dedupe, preserve order
+
+    results = []
+    for q in queries:
+        try:
+            resp = requests.get(
+                "https://api.unsplash.com/search/photos",
+                params={"query": q, "per_page": 5, "orientation": "landscape"},
+                headers={"Authorization": f"Client-ID {key}"},
+                timeout=10,
+            )
+            results = resp.json().get("results", [])
+        except Exception as e:
+            print(f"  Unsplash search failed for {q!r}: {e}")
+            continue
+        if results:
+            print(f"  Unsplash query {q!r} -> {len(results)} candidates")
+            break
+        print(f"  Unsplash query {q!r} -> 0, trying broader")
+
+    if not results:
+        print("  No Unsplash results for any query")
         return None, None
 
     img_dir = BLOG_REPO / "assets" / "images" / "posts"

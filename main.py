@@ -321,7 +321,7 @@ def fetch_hero_image(topic: str, slug: str, date_str: str) -> tuple[Path | None,
         print(f"  Unsplash query {q!r} -> {len(results)} candidates")
 
         for result in results:
-            if tried >= 8:
+            if tried >= 15:
                 break
             photographer = result["user"]["name"]
             username = result["user"]["username"]
@@ -341,7 +341,7 @@ def fetch_hero_image(topic: str, slug: str, date_str: str) -> tuple[Path | None,
                 return img_path, credit
             print(f"  FAIL ({reason}) — trying next candidate")
 
-        if tried >= 8:
+        if tried >= 15:
             break
 
     print(f"  No suitable hero image found after {tried} candidates")

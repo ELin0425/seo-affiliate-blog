@@ -293,7 +293,15 @@ def fetch_hero_image(topic: str, slug: str, date_str: str) -> tuple[Path | None,
     queries.append("kitchen food")
     queries = list(dict.fromkeys(queries))  # dedupe, preserve order
 
-    results = []
+    img_dir = BLOG_REPO / "assets" / "images" / "posts"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    # Try every query in order (broadest last); within each, try every
+    # returned candidate. Previously this stopped after the first query with
+    # any results and only tried its first 3 candidates, so 3 QA rejections
+    # on a narrow query (e.g. "kitchen microwave") killed the whole post even
+    # though a broader query like "kitchen food" was never attempted.
+    tried = 0
     for q in queries:
         try:
             resp = requests.get(
@@ -306,47 +314,47 @@ def fetch_hero_image(topic: str, slug: str, date_str: str) -> tuple[Path | None,
         except Exception as e:
             print(f"  Unsplash search failed for {q!r}: {e}")
             continue
-        if results:
-            print(f"  Unsplash query {q!r} -> {len(results)} candidates")
-            break
-        print(f"  Unsplash query {q!r} -> 0, trying broader")
 
-    if not results:
-        print("  No Unsplash results for any query")
-        return None, None
-
-    img_dir = BLOG_REPO / "assets" / "images" / "posts"
-    img_dir.mkdir(parents=True, exist_ok=True)
-
-    for result in results[:3]:
-        photographer = result["user"]["name"]
-        username = result["user"]["username"]
-        try:
-            img_data = requests.get(result["urls"]["regular"], timeout=15).content
-        except Exception:
+        if not results:
+            print(f"  Unsplash query {q!r} -> 0, trying broader")
             continue
+        print(f"  Unsplash query {q!r} -> {len(results)} candidates")
 
-        print(f"  QA-ing image by {photographer}...")
-        if _qa_image(img_data, topic):  # uses Haiku — just PASS/FAIL
-            img_path = img_dir / f"{date_str}-{slug}.jpg"
-            img_path.write_bytes(img_data)
-            credit = f"Photo by [{photographer}](https://unsplash.com/@{username}) on [Unsplash](https://unsplash.com)"
-            print(f"  PASS — saved {img_path.name}")
-            return img_path, credit
-        else:
-            print("  FAIL — trying next candidate")
+        for result in results:
+            if tried >= 8:
+                break
+            photographer = result["user"]["name"]
+            username = result["user"]["username"]
+            try:
+                img_data = requests.get(result["urls"]["regular"], timeout=15).content
+            except Exception:
+                continue
 
-    print("  No suitable hero image found after 3 candidates")
+            tried += 1
+            print(f"  QA-ing image by {photographer}...")
+            ok, reason = _qa_image(img_data, topic)
+            if ok:
+                img_path = img_dir / f"{date_str}-{slug}.jpg"
+                img_path.write_bytes(img_data)
+                credit = f"Photo by [{photographer}](https://unsplash.com/@{username}) on [Unsplash](https://unsplash.com)"
+                print(f"  PASS — saved {img_path.name}")
+                return img_path, credit
+            print(f"  FAIL ({reason}) — trying next candidate")
+
+        if tried >= 8:
+            break
+
+    print(f"  No suitable hero image found after {tried} candidates")
     return None, None
 
 
-def _qa_image(img_data: bytes, topic: str) -> bool:
+def _qa_image(img_data: bytes, topic: str) -> tuple[bool, str]:
     """Claude vision check — PASS if image is relevant and appealing for this topic."""
     b64 = base64.standard_b64encode(img_data).decode("utf-8")
     try:
         response = client.messages.create(
             model="claude-haiku-4-5",
-            max_tokens=20,
+            max_tokens=60,
             messages=[{
                 "role": "user",
                 "content": [
@@ -354,14 +362,15 @@ def _qa_image(img_data: bytes, topic: str) -> bool:
                     {"type": "text", "text": (
                         f"Blog post topic: '{topic}'. "
                         "Does this image show food, cooking, or kitchen items in an appealing, high-quality way? "
-                        "Reply PASS or FAIL only."
+                        "Reply with PASS or FAIL, then a short reason, e.g. 'FAIL - no kitchen items visible'."
                     )},
                 ],
             }],
         )
-        return "PASS" in _text(response).upper()
-    except Exception:
-        return False
+        text = _text(response).strip()
+        return "PASS" in text.upper().split()[0], text
+    except Exception as e:
+        return False, f"exception: {e}"
 
 
 # ── Article Writer ────────────────────────────────────────────────────────────
